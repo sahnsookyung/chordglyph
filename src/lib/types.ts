@@ -14,7 +14,11 @@ export type NoteLabelStyle = "sharps" | "flats";
 export type NoteStripSize = "compact" | "normal" | "large";
 export type SynthPatch = "soft-keys" | "warm-pad";
 export type FingertipName = "thumb" | "index" | "middle" | "ring" | "pinky";
-export type TrackerBackendKind = "mediapipe-hands" | "yolo-pose" | "openpose";
+export type TrackerBackendKind =
+  | "mediapipe-hands"
+  | "mediapipe-hands-worker"
+  | "yolo-pose"
+  | "openpose";
 export type CalibrationAudioMode = "off" | "cues" | "target-preview";
 export type CalibrationScope = Handedness | "Both";
 export type CalibrationPhase =

@@ -16,7 +16,8 @@ import type {
   FingerActivationTuningMap,
   FingertipName,
   Handedness,
-  Landmark
+  Landmark,
+  TrackerBackendKind
 } from "./lib/types";
 import { useGestureInstrument } from "./hooks/useGestureInstrument";
 
@@ -1058,6 +1059,22 @@ export default function App() {
                 </option>
               ))}
             </select>
+          </label>
+          <label>
+            <span>Tracking backend</span>
+            <select
+              value={state.settings.trackingBackend}
+              onChange={(event) =>
+                updateSettings({ trackingBackend: event.target.value as TrackerBackendKind })
+              }
+            >
+              <option value="mediapipe-hands">MediaPipe stable</option>
+              <option value="mediapipe-hands-worker">MediaPipe worker experimental</option>
+            </select>
+            <small className="settings-help">
+              Stable keeps landmark geometry aligned with the camera. Worker mode may reduce UI load
+              but can add visual offset on some browsers.
+            </small>
           </label>
           <label>
             <span>Audio output</span>

@@ -161,7 +161,7 @@ export class MediaPipeHandTrackerBackend implements HandTrackerBackend {
 }
 
 export class MediaPipeWorkerHandTrackerBackend implements HandTrackerBackend {
-  readonly kind = "mediapipe-hands" as const;
+  readonly kind = "mediapipe-hands-worker" as const;
   private worker: Worker | null = null;
   private rafId = 0;
   private videoFrameCallbackId = 0;

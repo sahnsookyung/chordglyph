@@ -390,7 +390,7 @@ export function normalizeInstrumentSettings(value: unknown): InstrumentSettings 
     ),
     trackingBackend: asOneOf<TrackerBackendKind>(
       persisted.trackingBackend,
-      ["mediapipe-hands", "yolo-pose", "openpose"],
+      ["mediapipe-hands", "mediapipe-hands-worker", "yolo-pose", "openpose"],
       DEFAULT_SETTINGS.trackingBackend
     ),
     calibrationAudioMode: asOneOf<CalibrationAudioMode>(
