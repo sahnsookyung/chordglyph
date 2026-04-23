@@ -30,8 +30,11 @@ function classifyFromFeatures(features: HandFeatures): GestureClassification {
 
   const scores = {
     dominant7: fistScore,
+    diminished: 0,
     major: majorScore,
+    major7: 0,
     minor: minorScore,
+    minor7: 0,
     single: singleScore
   };
 

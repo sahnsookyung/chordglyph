@@ -8,6 +8,13 @@ function makeFeatures(overrides: Partial<HandFeatures>): HandFeatures {
     pinchIndex: 0.1,
     pinchMiddle: 0.1,
     averageCurl: 0.15,
+    fingerExtended: {
+      thumb: true,
+      index: true,
+      middle: true,
+      ring: true,
+      pinky: true
+    },
     fingerCurl: {
       index: 0.1,
       middle: 0.1,

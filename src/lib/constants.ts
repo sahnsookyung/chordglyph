@@ -62,7 +62,25 @@ export const SHARP_CAPABLE_NATURAL_INDEXES = Array.from({ length: DEFAULT_PIANO_
 
 export const NOTE_COUNT = VISIBLE_NATURAL_NOTE_NAMES.length;
 
+export const DEFAULT_CIRCLE_FINGER_ENABLED = {
+  Left: {
+    thumb: false,
+    index: true,
+    middle: false,
+    ring: false,
+    pinky: false
+  },
+  Right: {
+    thumb: false,
+    index: true,
+    middle: false,
+    ring: false,
+    pinky: false
+  }
+} as const;
+
 export const DEFAULT_SETTINGS: InstrumentSettings = {
+  playMode: "piano",
   noteStripSize: "large",
   labelStyle: "sharps",
   depthGate: createHandedNumberMap(0.02),
@@ -89,6 +107,15 @@ export const DEFAULT_SETTINGS: InstrumentSettings = {
   volume: -10,
   synthPatch: "soft-keys",
   showDebugOverlays: true,
+  showFingertipStats: true,
+  circleFingerEnabled: {
+    Left: { ...DEFAULT_CIRCLE_FINGER_ENABLED.Left },
+    Right: { ...DEFAULT_CIRCLE_FINGER_ENABLED.Right }
+  },
+  circleOfFifths: {
+    Left: false,
+    Right: false
+  },
   deviceId: "",
   audioOutputDeviceId: "",
   trackingBackend: "mediapipe-hands",

@@ -74,12 +74,27 @@ describe("normalizeInstrumentSettings", () => {
     const normalized = normalizeInstrumentSettings({
       volume: Number.NaN,
       showHitBoxes: "yes",
+      playMode: "grid",
+      showFingertipStats: "no",
+      circleOfFifths: { Left: true, Right: "yes" },
+      circleFingerEnabled: {
+        Left: { thumb: true, index: false, middle: true, ring: "nope" }
+      },
       trackingBackend: "not-real",
       audioOutputDeviceId: 42
     });
 
     expect(normalized.volume).toBe(DEFAULT_SETTINGS.volume);
     expect(normalized.showHitBoxes).toBe(DEFAULT_SETTINGS.showHitBoxes);
+    expect(normalized.playMode).toBe(DEFAULT_SETTINGS.playMode);
+    expect(normalized.showFingertipStats).toBe(DEFAULT_SETTINGS.showFingertipStats);
+    expect(normalized.circleOfFifths.Left).toBe(true);
+    expect(normalized.circleOfFifths.Right).toBe(false);
+    expect(normalized.circleFingerEnabled.Left.thumb).toBe(true);
+    expect(normalized.circleFingerEnabled.Left.index).toBe(false);
+    expect(normalized.circleFingerEnabled.Left.middle).toBe(true);
+    expect(normalized.circleFingerEnabled.Left.ring).toBe(false);
+    expect(normalized.circleFingerEnabled.Right.index).toBe(true);
     expect(normalized.trackingBackend).toBe(DEFAULT_SETTINGS.trackingBackend);
     expect(normalized.audioOutputDeviceId).toBe(DEFAULT_SETTINGS.audioOutputDeviceId);
   });

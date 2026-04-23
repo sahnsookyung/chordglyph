@@ -21,7 +21,10 @@ const CHORD_INTERVALS: Record<ChordMode, number[]> = {
   single: [0],
   major: [0, 4, 7],
   minor: [0, 3, 7],
-  dominant7: [0, 4, 7, 10]
+  diminished: [0, 3, 6],
+  dominant7: [0, 4, 7, 10],
+  major7: [0, 4, 7, 11],
+  minor7: [0, 3, 7, 10]
 };
 
 export function getNoteNames(style: NoteLabelStyle): readonly string[] {
@@ -149,8 +152,14 @@ export function describeChord(rootIndex: number, mode: ChordMode, style: NoteLab
       return `${rootName} major`;
     case "minor":
       return `${rootName} minor`;
+    case "diminished":
+      return `${rootName} dim`;
     case "dominant7":
       return `${rootName}7`;
+    case "major7":
+      return `${rootName}maj7`;
+    case "minor7":
+      return `${rootName}m7`;
     default:
       return rootName;
   }
@@ -162,8 +171,14 @@ export function modeLabel(mode: ChordMode): string {
       return "Major";
     case "minor":
       return "Minor";
+    case "diminished":
+      return "Diminished";
     case "dominant7":
       return "Dominant 7";
+    case "major7":
+      return "Major 7";
+    case "minor7":
+      return "Minor 7";
     default:
       return "Single Note";
   }

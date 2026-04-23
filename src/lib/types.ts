@@ -1,7 +1,16 @@
 export type Handedness = "Left" | "Right";
 export type HandRole = "note" | "chord";
-export type ChordMode = "single" | "major" | "minor" | "dominant7";
+export type ChordMode =
+  | "single"
+  | "major"
+  | "minor"
+  | "diminished"
+  | "dominant7"
+  | "major7"
+  | "minor7";
 export type TriggerMode = "hover" | "pinch";
+export type PlayMode = "piano" | "circle";
+export type AudioStatus = "idle" | "arming" | "armed" | "blocked" | "error";
 export type SystemState =
   | "BOOT"
   | "CAMERA_READY"
@@ -37,6 +46,9 @@ export type FingerDepthSensitivityMap = Record<FingertipName, number>;
 export type HandedFingerDepthSensitivity = Record<Handedness, FingerDepthSensitivityMap>;
 export type FingerDepthSampleMap = Record<FingertipName, number | null>;
 export type HandedFingerDepthSamples = Record<Handedness, FingerDepthSampleMap>;
+export type CircleFingerEnabledMap = Record<FingertipName, boolean>;
+export type HandedCircleFingerEnabled = Record<Handedness, CircleFingerEnabledMap>;
+export type HandedBooleanMap = Record<Handedness, boolean>;
 export type HandedTouchDepthMap = Record<Handedness, number | null>;
 export type HandedNumberMap = Record<Handedness, number>;
 export type TouchCalibrationDirection = -1 | 1;
@@ -93,6 +105,7 @@ export interface HandFeatures {
   pinchIndex: number;
   pinchMiddle: number;
   averageCurl: number;
+  fingerExtended: Record<FingertipName, boolean>;
   fingerCurl: Record<"index" | "middle" | "ring" | "pinky", number>;
   tipToPalm: Record<"index" | "middle" | "ring" | "pinky", number>;
   extendedCount: number;
@@ -110,6 +123,7 @@ export interface GestureClassification {
 }
 
 export interface InstrumentSettings {
+  playMode: PlayMode;
   noteStripSize: NoteStripSize;
   labelStyle: NoteLabelStyle;
   depthGate: HandedNumberMap;
@@ -136,6 +150,9 @@ export interface InstrumentSettings {
   volume: number;
   synthPatch: SynthPatch;
   showDebugOverlays: boolean;
+  showFingertipStats: boolean;
+  circleFingerEnabled: HandedCircleFingerEnabled;
+  circleOfFifths: HandedBooleanMap;
   deviceId: string;
   audioOutputDeviceId: string;
   trackingBackend: TrackerBackendKind;

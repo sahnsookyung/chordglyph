@@ -13,11 +13,17 @@ describe("music helpers", () => {
   it("builds major voicings from the root", () => {
     expect(buildVoicing(0, "major")).toEqual([60, 64, 67]);
     expect(buildVoicing(9, "minor")).toEqual([69, 72, 76]);
+    expect(buildVoicing(2, "diminished")).toEqual([62, 65, 68]);
+    expect(buildVoicing(5, "major7")).toEqual([65, 69, 72, 76]);
+    expect(buildVoicing(7, "minor7")).toEqual([67, 70, 74, 77]);
   });
 
   it("formats chord labels with sharps or flats", () => {
     expect(describeChord(1, "major", "sharps")).toBe("C# major");
     expect(describeChord(1, "dominant7", "flats")).toBe("Db7");
+    expect(describeChord(2, "diminished", "sharps")).toBe("D dim");
+    expect(describeChord(4, "major7", "sharps")).toBe("Emaj7");
+    expect(describeChord(3, "minor7", "flats")).toBe("Ebm7");
   });
 
   it("maps natural keys and two-finger sharps to semitone roots", () => {

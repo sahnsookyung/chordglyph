@@ -9,16 +9,20 @@ import {
 } from "./calibration";
 import type {
   CalibrationAudioMode,
+  CircleFingerEnabledMap,
   FingerActivationTuning,
   FingerActivationTuningMap,
   FingerDepthSensitivityMap,
   FingerTouchCalibrationMap,
+  HandedBooleanMap,
+  HandedCircleFingerEnabled,
   HandedFingerActivationTuning,
   HandedNumberMap,
   HandedTouchCalibration,
   InstrumentSettings,
   NoteLabelStyle,
   NoteStripSize,
+  PlayMode,
   SynthPatch,
   TouchCalibrationDirection,
   TouchCalibrationPoint,
@@ -51,6 +55,52 @@ function clampNumber(value: number, min: number, max: number): number {
 
 function normalizeInteger(value: unknown, fallback: number, min: number, max: number): number {
   return clampNumber(Math.round(asFiniteNumber(value, fallback)), min, max);
+}
+
+function normalizeCircleFingerEnabledMap(
+  value: unknown,
+  fallback: CircleFingerEnabledMap
+): CircleFingerEnabledMap {
+  const raw = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+
+  return {
+    thumb: asBoolean(raw.thumb, fallback.thumb),
+    index: asBoolean(raw.index, fallback.index),
+    middle: asBoolean(raw.middle, fallback.middle),
+    ring: asBoolean(raw.ring, fallback.ring),
+    pinky: asBoolean(raw.pinky, fallback.pinky)
+  };
+}
+
+function normalizeHandedCircleFingerEnabled(
+  value: unknown,
+  fallback: HandedCircleFingerEnabled
+): HandedCircleFingerEnabled {
+  const raw = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+
+  return {
+    Left: normalizeCircleFingerEnabledMap(raw.Left, fallback.Left),
+    Right: normalizeCircleFingerEnabledMap(raw.Right, fallback.Right)
+  };
+}
+
+function normalizeHandedBooleanMap(
+  value: unknown,
+  fallback: HandedBooleanMap
+): HandedBooleanMap {
+  if (typeof value === "boolean") {
+    return {
+      Left: value,
+      Right: value
+    };
+  }
+
+  const raw = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+
+  return {
+    Left: asBoolean(raw.Left, fallback.Left),
+    Right: asBoolean(raw.Right, fallback.Right)
+  };
 }
 
 function normalizeSingleFingerSensitivity(
@@ -326,6 +376,11 @@ export function normalizeInstrumentSettings(value: unknown): InstrumentSettings 
   );
 
   return {
+    playMode: asOneOf<PlayMode>(
+      persisted.playMode,
+      ["piano", "circle"],
+      DEFAULT_SETTINGS.playMode
+    ),
     noteStripSize: asOneOf<NoteStripSize>(
       persisted.noteStripSize,
       ["compact", "normal", "large"],
@@ -392,6 +447,18 @@ export function normalizeInstrumentSettings(value: unknown): InstrumentSettings 
     showDebugOverlays: asBoolean(
       persisted.showDebugOverlays,
       DEFAULT_SETTINGS.showDebugOverlays
+    ),
+    showFingertipStats: asBoolean(
+      persisted.showFingertipStats,
+      DEFAULT_SETTINGS.showFingertipStats
+    ),
+    circleFingerEnabled: normalizeHandedCircleFingerEnabled(
+      persisted.circleFingerEnabled,
+      DEFAULT_SETTINGS.circleFingerEnabled
+    ),
+    circleOfFifths: normalizeHandedBooleanMap(
+      persisted.circleOfFifths,
+      DEFAULT_SETTINGS.circleOfFifths
     ),
     deviceId: asString(persisted.deviceId, DEFAULT_SETTINGS.deviceId),
     audioOutputDeviceId: asString(

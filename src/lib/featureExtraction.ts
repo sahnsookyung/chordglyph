@@ -2,6 +2,7 @@ import { averagePoint, clamp, distance } from "./geometry";
 import type { HandFeatures, Landmark } from "./types";
 
 const WRIST = 0;
+const THUMB_IP = 3;
 const THUMB_TIP = 4;
 const INDEX_MCP = 5;
 const INDEX_PIP = 6;
@@ -107,6 +108,18 @@ export function extractHandFeatures(landmarks: Landmark[]): HandFeatures {
   const averageCurl = (indexCurl + middleCurl + ringCurl + pinkyCurl) / 4;
   const pinchIndex = normalizedPinch(landmarks[THUMB_TIP], landmarks[INDEX_TIP], handScale);
   const pinchMiddle = normalizedPinch(landmarks[THUMB_TIP], landmarks[MIDDLE_TIP], handScale);
+  const thumbExtended =
+    distance(landmarks[THUMB_TIP], palmCenter) >
+      distance(landmarks[THUMB_IP], palmCenter) * 1.04 &&
+    pinchIndex < 0.55 &&
+    pinchMiddle < 0.55;
+  const fingerExtendedValues = {
+    thumb: thumbExtended,
+    index: fingerExtended(palmCenter, landmarks[INDEX_PIP], landmarks[INDEX_TIP]),
+    middle: fingerExtended(palmCenter, landmarks[MIDDLE_PIP], landmarks[MIDDLE_TIP]),
+    ring: fingerExtended(palmCenter, landmarks[RING_PIP], landmarks[RING_TIP]),
+    pinky: fingerExtended(palmCenter, landmarks[PINKY_PIP], landmarks[PINKY_TIP])
+  };
   const fistness = clamp(
     averageCurl * 0.75 +
       (1 - (tipToPalm.index + tipToPalm.middle + tipToPalm.ring + tipToPalm.pinky) / 4) * 0.45
@@ -121,6 +134,7 @@ export function extractHandFeatures(landmarks: Landmark[]): HandFeatures {
     pinchIndex,
     pinchMiddle,
     averageCurl,
+    fingerExtended: fingerExtendedValues,
     fingerCurl: fingerCurlValues,
     tipToPalm,
     extendedCount,

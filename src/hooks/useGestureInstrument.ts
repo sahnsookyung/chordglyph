@@ -13,6 +13,8 @@ import { ema, lerp } from "../lib/geometry";
 import { initialInteractionState, type InteractionState } from "../lib/interactionMachine";
 import { SessionLogger } from "../lib/logger";
 import {
+  buildVoicing,
+  describeChord,
   describeRootSemitone,
   getNaturalKeyCount,
   getRootMidi,
@@ -49,6 +51,12 @@ import {
   listAudioOutputDevices,
   supportsExplicitAudioOutputRouting
 } from "../lib/audioDevices";
+import {
+  classifyCircleChordQuality,
+  getCircleLayout,
+  getCircleRootSemitone,
+  resolveCircleSegment
+} from "../lib/circleMode";
 import { loadInstrumentSettings, saveInstrumentSettings } from "../lib/settingsStore";
 import { emptyStableHandSlots, resolveStableHandedness } from "../lib/stableHandedness";
 import {
@@ -68,7 +76,9 @@ import {
 } from "../lib/playingFeelCalibration";
 import { createTrackerBackend, listVideoDevices, type HandTrackerBackend } from "../lib/trackerBackend";
 import type {
+  AudioStatus,
   CalibrationScope,
+  ChordMode,
   FingertipName,
   HandedFingerDepthSamples,
   HandedNumberMap,
@@ -131,6 +141,17 @@ interface ActiveTouchMarker {
   activationVelocity: number;
   isCalibrated: boolean;
   isPressed: boolean;
+}
+
+interface ActiveCircleMarker {
+  handId: string;
+  stableHandedness: Handedness;
+  finger: FingertipName;
+  tipIndex: (typeof PLAYABLE_FINGERTIP_INDEXES)[number];
+  segment: number;
+  rootSemitone: number;
+  chordMode: ChordMode;
+  label: string;
 }
 
 interface TipIntentMemory {
@@ -203,6 +224,7 @@ export interface InstrumentViewState {
   trackerStatus: TrackerStatus;
   error: string | null;
   armed: boolean;
+  audioStatus: AudioStatus;
   settings: InstrumentSettings;
   interaction: InteractionState;
   overlayHands: Array<{ hand: TrackedHand; role: "note" | "chord" | "other" }>;
@@ -224,6 +246,8 @@ export interface InstrumentViewState {
   activeNaturalZones: number[];
   activeSharpZones: number[];
   activeTouchMarkers: ActiveTouchMarker[];
+  activeCircleSegments: Record<Handedness, number[]>;
+  activeCircleMarkers: ActiveCircleMarker[];
   calibrationSession: PlayingFeelCalibrationSession;
 }
 
@@ -393,6 +417,7 @@ export function useGestureInstrument(): {
   const startupAttemptedRef = useRef(false);
   const settingsHydratedRef = useRef(false);
   const armedRef = useRef(false);
+  const audioArmingRef = useRef(false);
   const audioOutputRequestIdRef = useRef(0);
   const lastRenderStateAtRef = useRef(0);
   const lastRenderSignatureRef = useRef("");
@@ -417,6 +442,7 @@ export function useGestureInstrument(): {
   const [settingsReady, setSettingsReady] = useState(false);
   const [trackerStatus, setTrackerStatus] = useState<TrackerStatus>("idle");
   const [armed, setArmed] = useState(false);
+  const [audioStatus, setAudioStatus] = useState<AudioStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [startupNotice, setStartupNotice] = useState<string | null>(null);
   const [audioOutputNotice, setAudioOutputNotice] = useState<string | null>(null);
@@ -424,6 +450,7 @@ export function useGestureInstrument(): {
     trackerStatus: "idle",
     error: null,
     armed: false,
+    audioStatus: "idle",
     settings: DEFAULT_SETTINGS,
     interaction: initialInteractionState,
     overlayHands: [],
@@ -459,6 +486,8 @@ export function useGestureInstrument(): {
     activeNaturalZones: [],
     activeSharpZones: [],
     activeTouchMarkers: [],
+    activeCircleSegments: { Left: [], Right: [] },
+    activeCircleMarkers: [],
     calibrationSession: calibrationSessionRef.current
   });
 
@@ -1045,12 +1074,92 @@ export function useGestureInstrument(): {
       const activeNoteLabels = activeSemitones.map((semitone) =>
         describeRootSemitone(semitone, liveSettings.labelStyle)
       );
+      const isCircleMode = liveSettings.playMode === "circle";
+      const circleSegmentSets: Record<Handedness, Set<number>> = {
+        Left: new Set<number>(),
+        Right: new Set<number>()
+      };
+      const activeCircleMarkers: ActiveCircleMarker[] = [];
+      const circleRootSemitoneSet = new Set<number>();
+      const circleMidiNoteSet = new Set<number>();
+      const circleChordLabelSet = new Set<string>();
+      const circleNoteLabels: string[] = [];
+
+      if (isCircleMode) {
+        ([
+          ["Left", stableLeftHand],
+          ["Right", stableRightHand]
+        ] as const).forEach(([stableHandedness, hand]) => {
+          if (!hand) {
+            return;
+          }
+
+          const circleLayout = getCircleLayout(stableHandedness);
+          const chordMode = classifyCircleChordQuality(extractHandFeatures(hand.landmarks));
+          const useFifths = liveSettings.circleOfFifths[stableHandedness];
+
+          PLAYABLE_FINGERTIP_INDEXES.forEach((tipIndex) => {
+            const finger = tipIndexToFingerName(tipIndex);
+            if (!liveSettings.circleFingerEnabled[stableHandedness][finger]) {
+              return;
+            }
+
+            const tip = hand.landmarks[tipIndex];
+            const segment = tip ? resolveCircleSegment(tip, circleLayout) : null;
+            if (segment === null) {
+              return;
+            }
+
+            const rootSemitone = getCircleRootSemitone(segment, useFifths);
+            const label = describeChord(rootSemitone, chordMode, liveSettings.labelStyle);
+            const labelSignature = `${rootSemitone}:${chordMode}`;
+            circleSegmentSets[stableHandedness].add(segment);
+            circleRootSemitoneSet.add(rootSemitone);
+            buildVoicing(rootSemitone, chordMode).forEach((midiNote) => {
+              circleMidiNoteSet.add(midiNote);
+            });
+
+            if (!circleChordLabelSet.has(labelSignature)) {
+              circleChordLabelSet.add(labelSignature);
+              circleNoteLabels.push(label);
+            }
+
+            activeCircleMarkers.push({
+              handId: hand.id,
+              stableHandedness,
+              finger,
+              tipIndex,
+              segment,
+              rootSemitone,
+              chordMode,
+              label
+            });
+          });
+        });
+      }
+
+      const circleRootSemitones = [...circleRootSemitoneSet].sort((left, right) => left - right);
+      const circleMidiNotes = [...circleMidiNoteSet].sort((left, right) => left - right);
       const suppressNormalAudio = calibrationUpdate.session.active;
-      const displayedActiveNaturalZones = suppressNormalAudio ? [] : activeNaturalZones;
-      const displayedActiveSharpZones = suppressNormalAudio ? [] : activeSharpZones;
-      const displayedActiveSemitones = suppressNormalAudio ? [] : activeSemitones;
-      const displayedActiveNoteLabels = suppressNormalAudio ? [] : activeNoteLabels;
-      const normalMidiSignature = suppressNormalAudio ? "" : activeMidiNotes.join(",");
+      const playableMidiNotes = isCircleMode ? circleMidiNotes : activeMidiNotes;
+      const playableSemitones = isCircleMode ? circleRootSemitones : activeSemitones;
+      const playableNoteLabels = isCircleMode ? circleNoteLabels : activeNoteLabels;
+      const displayedActiveNaturalZones = suppressNormalAudio || isCircleMode ? [] : activeNaturalZones;
+      const displayedActiveSharpZones = suppressNormalAudio || isCircleMode ? [] : activeSharpZones;
+      const displayedActiveCircleSegments =
+        suppressNormalAudio || !isCircleMode
+          ? { Left: [], Right: [] }
+          : {
+              Left: [...circleSegmentSets.Left],
+              Right: [...circleSegmentSets.Right]
+            };
+      const displayedActiveCircleMarkers =
+        suppressNormalAudio || !isCircleMode ? [] : activeCircleMarkers;
+      const displayedActiveTouchMarkers =
+        isCircleMode && !calibrationUpdate.session.active ? [] : activeTouchMarkers;
+      const displayedActiveSemitones = suppressNormalAudio ? [] : playableSemitones;
+      const displayedActiveNoteLabels = suppressNormalAudio ? [] : playableNoteLabels;
+      const normalMidiSignature = suppressNormalAudio ? "" : playableMidiNotes.join(",");
       const calibrationPreviewMidiSignature =
         calibrationUpdate.session.active &&
         calibrationUpdate.session.phase === "preview" &&
@@ -1059,7 +1168,7 @@ export function useGestureInstrument(): {
           : "";
 
       if (lastMidiSignatureRef.current !== normalMidiSignature) {
-        audioRef.current?.syncMidiNotes(suppressNormalAudio ? [] : activeMidiNotes);
+        audioRef.current?.syncMidiNotes(suppressNormalAudio ? [] : playableMidiNotes);
         lastMidiSignatureRef.current = normalMidiSignature;
       }
       if (
@@ -1141,9 +1250,13 @@ export function useGestureInstrument(): {
               )
             : null;
       const currentChordLabel =
-        displayedActiveNoteLabels.length > 0 ? displayedActiveNoteLabels.join(" • ") : "Waiting for touch";
+        displayedActiveNoteLabels.length > 0
+          ? displayedActiveNoteLabels.join(" • ")
+          : isCircleMode
+            ? "Circle ready"
+            : "Waiting for touch";
       let focusTouchMarker: ActiveTouchMarker | null = null;
-      for (const marker of activeTouchMarkers) {
+      for (const marker of displayedActiveTouchMarkers) {
         if (
           !focusTouchMarker ||
           Number(marker.isPressed) > Number(focusTouchMarker.isPressed) ||
@@ -1176,12 +1289,18 @@ export function useGestureInstrument(): {
               liveSettings.pianoWidthScale
             )
           : null;
-      let touchTips = directBlackTouches.size;
-      groupedWhiteTouches.forEach((count) => {
-        touchTips += count;
-      });
+      let touchTips = isCircleMode ? displayedActiveCircleMarkers.length : directBlackTouches.size;
+      if (!isCircleMode) {
+        groupedWhiteTouches.forEach((count) => {
+          touchTips += count;
+        });
+      }
       const renderSignature = [
+        liveSettings.playMode,
         displayedSemitoneSignature,
+        displayedActiveNoteLabels.join(","),
+        displayedActiveCircleSegments.Left.join(","),
+        displayedActiveCircleSegments.Right.join(","),
         trackedHands.length,
         calibrationUpdate.session.phase,
         calibrationUpdate.session.targetHand,
@@ -1207,6 +1326,7 @@ export function useGestureInstrument(): {
         trackerStatus: "ready",
         error: null,
         armed,
+        audioStatus,
         settings: liveSettings,
         interaction: nextInteraction,
         overlayHands: trackedHands.map((hand) => ({ hand, role: "note" })),
@@ -1220,7 +1340,7 @@ export function useGestureInstrument(): {
         audioOutputRoutingSupported: supportsExplicitAudioOutputRouting(),
         currentRootLabel,
         currentChordLabel,
-        currentModeLabel: "Piano",
+        currentModeLabel: isCircleMode ? "Circle" : "Piano",
         logCount,
         warnings: [],
         startupNotice,
@@ -1245,11 +1365,21 @@ export function useGestureInstrument(): {
         },
         activeNaturalZones: displayedActiveNaturalZones,
         activeSharpZones: displayedActiveSharpZones,
-        activeTouchMarkers,
+        activeTouchMarkers: displayedActiveTouchMarkers,
+        activeCircleSegments: displayedActiveCircleSegments,
+        activeCircleMarkers: displayedActiveCircleMarkers,
         calibrationSession: calibrationUpdate.session
       });
     },
-    [applyCalibrationCommit, armed, audioOutputDevices, audioOutputNotice, devices, startupNotice]
+    [
+      applyCalibrationCommit,
+      armed,
+      audioOutputDevices,
+      audioOutputNotice,
+      audioStatus,
+      devices,
+      startupNotice
+    ]
   );
 
   useEffect(() => {
@@ -1361,6 +1491,7 @@ export function useGestureInstrument(): {
       ...current,
       trackerStatus: "idle",
       settings: restoredSettings ?? current.settings,
+      audioStatus,
       interaction: initialInteractionState,
       overlayHands: [],
       noteCursor: null,
@@ -1386,21 +1517,27 @@ export function useGestureInstrument(): {
       activeNaturalZones: [],
       activeSharpZones: [],
       activeTouchMarkers: [],
+      activeCircleSegments: { Left: [], Right: [] },
+      activeCircleMarkers: [],
       calibrationSession: calibrationSessionRef.current
     }));
-  }, [audioOutputNotice, startupNotice]);
+  }, [audioOutputNotice, audioStatus, startupNotice]);
 
   const armAudio = useCallback(async () => {
-    if (armedRef.current) {
+    if (armedRef.current || audioArmingRef.current) {
       return;
     }
 
-    if (!audioRef.current) {
-      const { AudioEngine: RuntimeAudioEngine } = await import("../lib/audioEngine");
-      audioRef.current = new RuntimeAudioEngine();
-    }
+    audioArmingRef.current = true;
+    setAudioStatus("arming");
+    setRenderState((current) => ({ ...current, audioStatus: "arming" }));
 
     try {
+      if (!audioRef.current) {
+        const { AudioEngine: RuntimeAudioEngine } = await import("../lib/audioEngine");
+        audioRef.current = new RuntimeAudioEngine();
+      }
+
       const liveSettings = settingsRef.current;
       const routed = await audioRef.current.start(
         liveSettings.synthPatch,
@@ -1409,6 +1546,7 @@ export function useGestureInstrument(): {
       );
       armedRef.current = true;
       setArmed(true);
+      setAudioStatus("armed");
       setStartupNotice(null);
       const notice =
         liveSettings.audioOutputDeviceId && !routed
@@ -1419,16 +1557,28 @@ export function useGestureInstrument(): {
       setRenderState((current) => ({
         ...current,
         armed: true,
+        audioStatus: "armed",
         startupNotice: null,
         audioOutputNotice: notice
       }));
-    } catch {
-      setStartupNotice("Browser blocked autoplay audio - sound will arm on your first click or key press.");
+    } catch (caughtError) {
+      const nextAudioStatus: AudioStatus =
+        caughtError instanceof Error && /import|module|routing|output/i.test(caughtError.message)
+          ? "error"
+          : "blocked";
+      setAudioStatus(nextAudioStatus);
+      const notice =
+        nextAudioStatus === "blocked"
+          ? "Browser blocked autoplay audio - sound will arm on your first click or key press."
+          : "Audio initialization failed. Click the audio status pill to retry.";
+      setStartupNotice(notice);
       setRenderState((current) => ({
         ...current,
-        startupNotice:
-          "Browser blocked autoplay audio - sound will arm on your first click or key press."
+        audioStatus: nextAudioStatus,
+        startupNotice: notice
       }));
+    } finally {
+      audioArmingRef.current = false;
     }
   }, []);
 
@@ -1466,6 +1616,26 @@ export function useGestureInstrument(): {
     const next = { ...previous, ...patch };
     settingsRef.current = next;
     setSettings(next);
+
+    if (patch.playMode !== undefined && patch.playMode !== previous.playMode) {
+      audioRef.current?.syncMidiNotes([]);
+      audioRef.current?.stopCalibrationPreview();
+      lastMidiSignatureRef.current = null;
+      lastCalibrationPreviewMidiSignatureRef.current = null;
+      lastLoggedSemitoneSignatureRef.current = "";
+      tipIntentMemoryRef.current = {};
+      setRenderState((current) => ({
+        ...current,
+        currentRootLabel: null,
+        currentChordLabel: patch.playMode === "circle" ? "Circle ready" : "Waiting for touch",
+        currentModeLabel: patch.playMode === "circle" ? "Circle" : "Piano",
+        activeNaturalZones: [],
+        activeSharpZones: [],
+        activeCircleSegments: { Left: [], Right: [] },
+        activeCircleMarkers: [],
+        activeTouchMarkers: []
+      }));
+    }
 
     if (armedRef.current && audioRef.current) {
       if (patch.synthPatch !== undefined) {
@@ -1634,6 +1804,8 @@ export function useGestureInstrument(): {
         calibrationSession: result.session,
         activeNaturalZones: [],
         activeSharpZones: [],
+        activeCircleSegments: { Left: [], Right: [] },
+        activeCircleMarkers: [],
         currentRootLabel: null,
         currentChordLabel: result.session.active ? "Calibrating" : current.currentChordLabel
       }));
@@ -1662,6 +1834,8 @@ export function useGestureInstrument(): {
         calibrationSession: nextSession,
         activeNaturalZones: [],
         activeSharpZones: [],
+        activeCircleSegments: { Left: [], Right: [] },
+        activeCircleMarkers: [],
         currentRootLabel: null,
         currentChordLabel: "Calibrating"
       }));
@@ -1711,6 +1885,8 @@ export function useGestureInstrument(): {
       calibrationSession: nextSession,
       activeNaturalZones: [],
       activeSharpZones: [],
+      activeCircleSegments: { Left: [], Right: [] },
+      activeCircleMarkers: [],
       currentRootLabel: null,
       currentChordLabel: "Waiting for touch"
     }));
@@ -1758,6 +1934,7 @@ export function useGestureInstrument(): {
         trackerStatus,
         error,
         armed,
+        audioStatus,
         settings,
         devices,
         audioOutputDevices,
@@ -1787,6 +1964,7 @@ export function useGestureInstrument(): {
       armed,
       audioOutputDevices,
       audioOutputNotice,
+      audioStatus,
       calibrateFingerSensitivity,
       calibrateSingleFingerSensitivity,
       calibrateDepthGate,

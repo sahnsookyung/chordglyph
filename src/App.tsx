@@ -9,6 +9,11 @@ import {
   MAX_PIANO_HEIGHT_SCALE,
   getWhiteHitSegments
 } from "./lib/pianoLayout";
+import {
+  CIRCLE_NOTE_COUNT,
+  getCircleLayout,
+  getCircleNoteOrder
+} from "./lib/circleMode";
 import { getStripBounds } from "./lib/noteMapping";
 import { getCalibrationAcceptedControlZones } from "./lib/playingFeelCalibration";
 import { MAX_PIANO_OCTAVES, MIN_PIANO_OCTAVES } from "./lib/constants";
@@ -54,6 +59,52 @@ const FINGERTIP_SENSITIVITY_CONTROLS: Array<{ key: FingertipName; label: string 
   { key: "ring", label: "Ring" },
   { key: "pinky", label: "Pinky" }
 ];
+
+const CIRCLE_HANDS: readonly Handedness[] = ["Left", "Right"];
+
+function audioStatusLabel(status: "idle" | "arming" | "armed" | "blocked" | "error"): string {
+  switch (status) {
+    case "arming":
+      return "Audio arming...";
+    case "armed":
+      return "Audio ready";
+    case "blocked":
+      return "Click to enable audio";
+    case "error":
+      return "Audio retry";
+    default:
+      return "Audio idle";
+  }
+}
+
+function circlePoint(angle: number, radius: number): { x: number; y: number } {
+  return {
+    x: 50 + Math.sin(angle) * radius,
+    y: 50 - Math.cos(angle) * radius
+  };
+}
+
+function circleSegmentPath(segment: number): string {
+  const segmentSize = (Math.PI * 2) / CIRCLE_NOTE_COUNT;
+  const startAngle = segment * segmentSize - segmentSize / 2;
+  const endAngle = segment * segmentSize + segmentSize / 2;
+  const outerStart = circlePoint(startAngle, 48);
+  const outerEnd = circlePoint(endAngle, 48);
+  const innerStart = circlePoint(startAngle, 12);
+  const innerEnd = circlePoint(endAngle, 12);
+
+  return [
+    `M ${outerStart.x.toFixed(3)} ${outerStart.y.toFixed(3)}`,
+    `A 48 48 0 0 1 ${outerEnd.x.toFixed(3)} ${outerEnd.y.toFixed(3)}`,
+    `L ${innerEnd.x.toFixed(3)} ${innerEnd.y.toFixed(3)}`,
+    `A 12 12 0 0 0 ${innerStart.x.toFixed(3)} ${innerStart.y.toFixed(3)}`,
+    "Z"
+  ].join(" ");
+}
+
+function circleLabelPoint(segment: number): { x: number; y: number } {
+  return circlePoint((segment * Math.PI * 2) / CIRCLE_NOTE_COUNT, 31);
+}
 
 function hexToRgba(hex: string, alpha: number): string {
   const normalized = hex.trim().replace("#", "");
@@ -293,6 +344,7 @@ export default function App() {
     cancelPlayingFeelCalibrationFlow,
     startTracking,
     stopTracking,
+    armAudio,
     updateSettings
   } = useGestureInstrument();
   const stageRef = useRef<HTMLDivElement | null>(null);
@@ -378,7 +430,7 @@ export default function App() {
         activeTouchMarkers,
         role === "note" ? "#7dd3fc" : role === "chord" ? "#fb923c" : "#e2e8f0",
         state.settings.hitBoxColor,
-        !state.settings.lowLatencyMode
+        state.settings.showFingertipStats && !state.settings.lowLatencyMode
       );
     });
   }, [
@@ -389,7 +441,8 @@ export default function App() {
     state.overlayHands,
     state.settings.hitBoxColor,
     state.settings.lowLatencyMode,
-    state.settings.overlayThickness
+    state.settings.overlayThickness,
+    state.settings.showFingertipStats
   ]);
 
   const noteNames = useMemo(
@@ -427,6 +480,13 @@ export default function App() {
   const blackKeyTop = `${((pianoLayout.blackKeyTopY - pianoLayout.topY) / pianoLayout.heightRatio) * 100}%`;
   const blackKeyHeight =
     `${((pianoLayout.blackKeyBottomY - pianoLayout.blackKeyTopY) / pianoLayout.heightRatio) * 100}%`;
+  const circleLayouts = useMemo(
+    () => ({
+      Left: getCircleLayout("Left"),
+      Right: getCircleLayout("Right")
+    }),
+    []
+  );
   const guidedCalibrationFinger =
     guidedCalibrationIndex === null ? null : FINGERTIP_SENSITIVITY_CONTROLS[guidedCalibrationIndex] ?? null;
   const hasFingerDepthSamples = FINGERTIP_SENSITIVITY_CONTROLS.some(
@@ -520,6 +580,29 @@ export default function App() {
       }
     });
   };
+  const updateCircleFingerEnabled = (
+    hand: Handedness,
+    finger: FingertipName,
+    enabled: boolean
+  ) => {
+    updateSettings({
+      circleFingerEnabled: {
+        ...state.settings.circleFingerEnabled,
+        [hand]: {
+          ...state.settings.circleFingerEnabled[hand],
+          [finger]: enabled
+        }
+      }
+    });
+  };
+  const updateCircleOfFifths = (hand: Handedness, enabled: boolean) => {
+    updateSettings({
+      circleOfFifths: {
+        ...state.settings.circleOfFifths,
+        [hand]: enabled
+      }
+    });
+  };
 
   useEffect(() => {
     if (state.trackerStatus !== "ready") {
@@ -533,11 +616,37 @@ export default function App() {
       <header className="app-topbar">
         <div className="brand-block topbar-brand">
           <h1>ChordGlyph</h1>
-          <p className="topbar-subtitle">Fingertip piano</p>
+          <p className="topbar-subtitle">
+            {state.settings.playMode === "circle" ? "Fingertip circles" : "Fingertip piano"}
+          </p>
         </div>
 
         <div className="topbar-actions">
           <div className="button-row topbar-buttons">
+            <label className="topbar-scope-select">
+              <span>Play mode</span>
+              <select
+                value={state.settings.playMode}
+                onChange={(event) =>
+                  updateSettings({ playMode: event.target.value as "piano" | "circle" })
+                }
+              >
+                <option value="piano">Piano</option>
+                <option value="circle">Circle</option>
+              </select>
+            </label>
+            <button
+              className={`audio-status-pill ${state.audioStatus}`}
+              onClick={() => void armAudio()}
+              disabled={state.audioStatus === "arming" || state.audioStatus === "armed"}
+              title={
+                state.audioStatus === "blocked" || state.audioStatus === "error"
+                  ? "Click to retry audio startup"
+                  : undefined
+              }
+            >
+              {audioStatusLabel(state.audioStatus)}
+            </button>
             {state.trackerStatus === "ready" ? (
               <span className="topbar-live-pill">Camera live</span>
             ) : (
@@ -1202,6 +1311,14 @@ export default function App() {
           <label className="checkbox-row">
             <input
               type="checkbox"
+              checked={state.settings.showFingertipStats}
+              onChange={(event) => updateSettings({ showFingertipStats: event.target.checked })}
+            />
+            <span>Fingertip stats</span>
+          </label>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
               checked={state.settings.showHitBoxes}
               onChange={(event) => updateSettings({ showHitBoxes: event.target.checked })}
             />
@@ -1217,28 +1334,101 @@ export default function App() {
           </label>
         </section>
 
+        {state.settings.playMode === "circle" ? (
+          <section className="panel-card circle-settings-card">
+            <div className="legend-header">
+              <h2>Circle Mode</h2>
+              <strong>Z-free</strong>
+            </div>
+            <p className="settings-help">
+              Fingertips choose roots by circle segment. Hand shape chooses chord quality, so this mode
+              avoids depth gating entirely.
+            </p>
+            <div className="circle-settings-grid">
+              {CIRCLE_HANDS.map((hand) => (
+                <div key={`circle-settings-${hand}`} className="circle-hand-settings">
+                  <div className="legend-header">
+                    <strong>{hand} hand</strong>
+                    <label className="checkbox-row compact-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={state.settings.circleOfFifths[hand]}
+                        onChange={(event) => updateCircleOfFifths(hand, event.target.checked)}
+                      />
+                      <span>Circle of fifths</span>
+                    </label>
+                  </div>
+                  <div className="circle-finger-grid">
+                    {FINGERTIP_SENSITIVITY_CONTROLS.map(({ key, label }) => (
+                      <label key={`circle-${hand}-${key}`} className="checkbox-row compact-checkbox">
+                        <input
+                          type="checkbox"
+                          checked={state.settings.circleFingerEnabled[hand][key]}
+                          onChange={(event) =>
+                            updateCircleFingerEnabled(hand, key, event.target.checked)
+                          }
+                        />
+                        <span>{label}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <small className="settings-help">
+                    Order: {getCircleNoteOrder(state.settings.circleOfFifths[hand]).join(" ")}
+                  </small>
+                </div>
+              ))}
+            </div>
+            <div className="circle-combo-legend">
+              <span>Index: single</span>
+              <span>Index + middle: major</span>
+              <span>+ thumb: minor</span>
+              <span>+ ring: major7/minor7</span>
+              <span>Pinky: diminished</span>
+            </div>
+          </section>
+        ) : null}
+
         <section className="panel-card">
           <div className="legend-header">
-            <h2>Piano Touch</h2>
+            <h2>{state.settings.playMode === "circle" ? "Circle Touch" : "Piano Touch"}</h2>
             <strong>{state.currentChordLabel}</strong>
           </div>
           <div className="legend-list">
-            <div className="legend-item active">
-              <span className="legend-icon">Fingertips only</span>
-              <span>Only tip landmarks can trigger notes</span>
-            </div>
-            <div className="legend-item active">
-              <span className="legend-icon">Z color ramp</span>
-              <span>Tip color warms up as calibrated activation approaches press</span>
-            </div>
-            <div className="legend-item active">
-              <span className="legend-icon">Activation</span>
-              <span>Pressing uses per-fingertip hover/press calibration with velocity-assisted release</span>
-            </div>
-            <div className="legend-item active">
-              <span className="legend-icon">Tracking layer</span>
-              <span>Hands render above the keyboard</span>
-            </div>
+            {state.settings.playMode === "circle" ? (
+              <>
+                <div className="legend-item active">
+                  <span className="legend-icon">No z gate</span>
+                  <span>Circle mode plays from x/y segment hover only</span>
+                </div>
+                <div className="legend-item active">
+                  <span className="legend-icon">Per hand</span>
+                  <span>Left hand controls the left circle; right hand controls the right circle</span>
+                </div>
+                <div className="legend-item active">
+                  <span className="legend-icon">Shape chords</span>
+                  <span>Lifted-finger combos choose single, triad, diminished, or seventh voicings</span>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="legend-item active">
+                  <span className="legend-icon">Fingertips only</span>
+                  <span>Only tip landmarks can trigger notes</span>
+                </div>
+                <div className="legend-item active">
+                  <span className="legend-icon">Z color ramp</span>
+                  <span>Tip color warms up as calibrated activation approaches press</span>
+                </div>
+                <div className="legend-item active">
+                  <span className="legend-icon">Activation</span>
+                  <span>Pressing uses per-fingertip hover/press calibration with velocity-assisted release</span>
+                </div>
+                <div className="legend-item active">
+                  <span className="legend-icon">Tracking layer</span>
+                  <span>Hands render above the keyboard</span>
+                </div>
+              </>
+            )}
           </div>
           <button className="ghost-button full-width" onClick={exportLogs}>
             Export Session Log ({state.logCount})
@@ -1361,6 +1551,58 @@ export default function App() {
               <canvas ref={overlayRef} className="overlay-canvas" />
             ) : null}
             <div className="stage-vignette" />
+
+            {state.settings.playMode === "circle" ? (
+              <div className="circle-layer">
+                {CIRCLE_HANDS.map((hand) => {
+                  const layout = circleLayouts[hand];
+                  const activeSegments = new Set(state.activeCircleSegments[hand]);
+                  const noteOrder = getCircleNoteOrder(state.settings.circleOfFifths[hand]);
+
+                  return (
+                    <div
+                      key={`note-circle-${hand}`}
+                      className={`note-circle ${hand.toLowerCase()}`}
+                      style={{
+                        left: `${(layout.center.x - layout.radiusX) * 100}%`,
+                        top: `${(layout.center.y - layout.radiusY) * 100}%`,
+                        width: `${layout.radiusX * 2 * 100}%`,
+                        height: `${layout.radiusY * 2 * 100}%`
+                      }}
+                    >
+                      <svg className="note-circle-svg" viewBox="0 0 100 100" aria-hidden="true">
+                        {noteOrder.map((label, segment) => {
+                          const isActive = activeSegments.has(segment);
+                          const labelPoint = circleLabelPoint(segment);
+                          return (
+                            <g key={`${hand}-${label}-${segment}`}>
+                              <path
+                                className={isActive ? "circle-segment active" : "circle-segment"}
+                                d={circleSegmentPath(segment)}
+                              />
+                              <text
+                                className={isActive ? "circle-label active" : "circle-label"}
+                                x={labelPoint.x}
+                                y={labelPoint.y}
+                                textAnchor="middle"
+                                dominantBaseline="middle"
+                              >
+                                {label}
+                              </text>
+                            </g>
+                          );
+                        })}
+                        <circle className="circle-dead-zone" cx="50" cy="50" r="9" />
+                      </svg>
+                      <div className="note-circle-caption">
+                        <strong>{hand}</strong>
+                        <span>{state.settings.circleOfFifths[hand] ? "Fifths" : "Natural"}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
 
             <div className="hud-group top-left">
               <div className="hud-chip note">
@@ -1510,92 +1752,92 @@ export default function App() {
               </>
             ) : null}
 
-            <div
-              className="piano-strip"
-              style={{
-                opacity: state.settings.pianoOpacity,
-                left: `${pianoHorizontalBounds.left * 100}%`,
-                right: `${(1 - pianoHorizontalBounds.right) * 100}%`,
-                bottom: `${pianoLayout.bottomOffset * 100}%`,
-                height: `${pianoLayout.heightRatio * 100}%`
-              }}
-            >
-              {state.settings.showHitBoxes ? (
-                <div
-                  className="piano-hitbox-layer"
-                  style={
-                    {
-                      "--hitbox-color": state.settings.hitBoxColor
-                    } as CSSProperties
-                  }
-                >
-                  <div
-                    className="piano-hitbox-white-layer"
-                  >
-                    {whiteHitSegments.map((segment) => (
-                      <div
-                        key={`white-hitbox-${segment.keyIndex}-${segment.segment}`}
-                        className="white-hitbox"
-                        style={{
-                          left: `${segment.leftX * 100}%`,
-                          width: `${(segment.rightX - segment.leftX) * 100}%`,
-                          top: `${((segment.topY - pianoLayout.topY) / pianoLayout.heightRatio) * 100}%`,
-                          height: `${((segment.bottomY - segment.topY) / pianoLayout.heightRatio) * 100}%`
-                        }}
-                      />
-                    ))}
-                  </div>
-                  <div className="piano-hitbox-black-layer">
-                    {pianoLayout.blackKeys.map((key) => (
-                      <div
-                        key={`black-hitbox-${key.label}-${key.sourceIndex}`}
-                        className="black-hitbox"
-                        style={{
-                          left: `${key.centerX * 100}%`,
-                          width: `${(key.rightX - key.leftX) * 100}%`,
-                          top: blackKeyTop,
-                          height: blackKeyHeight
-                        }}
-                      />
-                    ))}
-                  </div>
-                </div>
-              ) : null}
+            {state.settings.playMode === "piano" ? (
               <div
-                className="piano-white-keys"
-                style={{ gridTemplateColumns: `repeat(${noteNames.length}, minmax(0, 1fr))` }}
+                className="piano-strip"
+                style={{
+                  opacity: state.settings.pianoOpacity,
+                  left: `${pianoHorizontalBounds.left * 100}%`,
+                  right: `${(1 - pianoHorizontalBounds.right) * 100}%`,
+                  bottom: `${pianoLayout.bottomOffset * 100}%`,
+                  height: `${pianoLayout.heightRatio * 100}%`
+                }}
               >
-                {noteNames.map((noteName, index) => {
-                  const isActive = state.activeNaturalZones.includes(index);
-                  return (
-                    <div
-                      key={`${noteName}-${index}`}
-                      className={isActive ? "white-key active" : "white-key"}
-                    >
-                      <span>{noteName}</span>
+                {state.settings.showHitBoxes ? (
+                  <div
+                    className="piano-hitbox-layer"
+                    style={
+                      {
+                        "--hitbox-color": state.settings.hitBoxColor
+                      } as CSSProperties
+                    }
+                  >
+                    <div className="piano-hitbox-white-layer">
+                      {whiteHitSegments.map((segment) => (
+                        <div
+                          key={`white-hitbox-${segment.keyIndex}-${segment.segment}`}
+                          className="white-hitbox"
+                          style={{
+                            left: `${segment.leftX * 100}%`,
+                            width: `${(segment.rightX - segment.leftX) * 100}%`,
+                            top: `${((segment.topY - pianoLayout.topY) / pianoLayout.heightRatio) * 100}%`,
+                            height: `${((segment.bottomY - segment.topY) / pianoLayout.heightRatio) * 100}%`
+                          }}
+                        />
+                      ))}
                     </div>
-                  );
-                })}
-              </div>
-              <div className="piano-black-keys">
-                {pianoLayout.blackKeys.map((key) => {
-                  const isActive = state.activeSharpZones.includes(key.sourceIndex);
-                  return (
-                    <div
-                      key={`${key.label}-${key.sourceIndex}`}
-                      className={isActive ? "black-key active" : "black-key"}
-                      style={{ left: `${key.centerX * 100}%`, width: blackKeyWidth }}
-                    >
-                      <span>{key.label}</span>
+                    <div className="piano-hitbox-black-layer">
+                      {pianoLayout.blackKeys.map((key) => (
+                        <div
+                          key={`black-hitbox-${key.label}-${key.sourceIndex}`}
+                          className="black-hitbox"
+                          style={{
+                            left: `${key.centerX * 100}%`,
+                            width: `${(key.rightX - key.leftX) * 100}%`,
+                            top: blackKeyTop,
+                            height: blackKeyHeight
+                          }}
+                        />
+                      ))}
                     </div>
-                  );
-                })}
+                  </div>
+                ) : null}
+                <div
+                  className="piano-white-keys"
+                  style={{ gridTemplateColumns: `repeat(${noteNames.length}, minmax(0, 1fr))` }}
+                >
+                  {noteNames.map((noteName, index) => {
+                    const isActive = state.activeNaturalZones.includes(index);
+                    return (
+                      <div
+                        key={`${noteName}-${index}`}
+                        className={isActive ? "white-key active" : "white-key"}
+                      >
+                        <span>{noteName}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="piano-black-keys">
+                  {pianoLayout.blackKeys.map((key) => {
+                    const isActive = state.activeSharpZones.includes(key.sourceIndex);
+                    return (
+                      <div
+                        key={`${key.label}-${key.sourceIndex}`}
+                        className={isActive ? "black-key active" : "black-key"}
+                        style={{ left: `${key.centerX * 100}%`, width: blackKeyWidth }}
+                      >
+                        <span>{key.label}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="piano-caption">
+                  <span>Any fingertip can press the white keys</span>
+                  <span>Black keys now use direct hit detection, with two-finger fallback</span>
+                </div>
               </div>
-              <div className="piano-caption">
-                <span>Any fingertip can press the white keys</span>
-                <span>Black keys now use direct hit detection, with two-finger fallback</span>
-              </div>
-            </div>
+            ) : null}
           </div>
         </section>
 
