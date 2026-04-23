@@ -133,6 +133,7 @@ interface ActiveTouchMarker {
   handId: string;
   stableHandedness: Handedness;
   tipIndex: (typeof PLAYABLE_FINGERTIP_INDEXES)[number];
+  source: "piano" | "circle";
   modelZ: number;
   rawDepthScore: number;
   sensitivity: number;
@@ -1005,13 +1006,14 @@ export function useGestureInstrument(): {
               }
             });
 
-            activeTouchMarkers.push({
-              handId: hand.id,
-              stableHandedness,
-              tipIndex,
-              modelZ: tip.z,
-              rawDepthScore: depthScore,
-              sensitivity,
+          activeTouchMarkers.push({
+            handId: hand.id,
+            stableHandedness,
+            tipIndex,
+            source: "piano",
+            modelZ: tip.z,
+            rawDepthScore: depthScore,
+            sensitivity,
               depthScore: effectiveDepthScore,
               activationProgress: touchActivation.activation,
               activationVelocity,
@@ -1093,6 +1095,7 @@ export function useGestureInstrument(): {
         Right: new Set<number>()
       };
       const activeCircleMarkers: ActiveCircleMarker[] = [];
+      const activeCircleTouchMarkers: ActiveTouchMarker[] = [];
       const circleRootSemitoneSet = new Set<number>();
       const circleMidiNoteSet = new Set<number>();
       const circleChordLabelSet = new Set<string>();
@@ -1147,16 +1150,34 @@ export function useGestureInstrument(): {
               chordMode,
               label
             });
+            activeCircleTouchMarkers.push({
+              handId: hand.id,
+              stableHandedness,
+              tipIndex,
+              source: "circle",
+              modelZ: tip.z,
+              rawDepthScore: 0,
+              sensitivity: 1,
+              depthScore: 0,
+              activationProgress: 1,
+              activationVelocity: 0,
+              isCalibrated: true,
+              isPressed: true
+            });
           });
         });
       }
 
       const circleRootSemitones = [...circleRootSemitoneSet].sort((left, right) => left - right);
       const circleMidiNotes = [...circleMidiNoteSet].sort((left, right) => left - right);
+      const circleRootLabels = circleRootSemitones.map((semitone) =>
+        describeRootSemitone(semitone, liveSettings.labelStyle)
+      );
       const suppressNormalAudio = calibrationUpdate.session.active;
       const playableMidiNotes = isCircleMode ? circleMidiNotes : activeMidiNotes;
       const playableSemitones = isCircleMode ? circleRootSemitones : activeSemitones;
       const playableNoteLabels = isCircleMode ? circleNoteLabels : activeNoteLabels;
+      const playableRootLabels = isCircleMode ? circleRootLabels : activeNoteLabels;
       const displayedActiveNaturalZones = suppressNormalAudio || isCircleMode ? [] : activeNaturalZones;
       const displayedActiveSharpZones = suppressNormalAudio || isCircleMode ? [] : activeSharpZones;
       const displayedActiveCircleSegments =
@@ -1169,9 +1190,14 @@ export function useGestureInstrument(): {
       const displayedActiveCircleMarkers =
         suppressNormalAudio || !isCircleMode ? [] : activeCircleMarkers;
       const displayedActiveTouchMarkers =
-        isCircleMode && !calibrationUpdate.session.active ? [] : activeTouchMarkers;
+        suppressNormalAudio
+          ? []
+          : isCircleMode
+            ? activeCircleTouchMarkers
+            : activeTouchMarkers;
       const displayedActiveSemitones = suppressNormalAudio ? [] : playableSemitones;
       const displayedActiveNoteLabels = suppressNormalAudio ? [] : playableNoteLabels;
+      const displayedActiveRootLabels = suppressNormalAudio ? [] : playableRootLabels;
       const normalMidiSignature = suppressNormalAudio ? "" : playableMidiNotes.join(",");
       const calibrationPreviewMidiSignature =
         calibrationUpdate.session.active &&
@@ -1255,7 +1281,7 @@ export function useGestureInstrument(): {
 
       const currentRootLabel =
         displayedActiveSemitones.length > 0
-          ? displayedActiveNoteLabels.join(" ")
+          ? displayedActiveRootLabels.join(" • ")
           : smoothedNoteX !== null && displayedActiveNaturalZones[0] !== undefined
             ? describeRootSemitone(
                 naturalZoneToSemitone(displayedActiveNaturalZones[0], false, liveSettings.pianoOctaves),

@@ -151,6 +151,7 @@ function drawHandPath(
   thickness: number,
   activeTouchMarkers: Array<{
     tipIndex: number;
+    source: "piano" | "circle";
     modelZ: number;
     rawDepthScore: number;
     sensitivity: number;
@@ -211,6 +212,10 @@ function drawHandPath(
   context.font = '600 11px "Space Grotesk", sans-serif';
 
   activeTouchMarkers.forEach((marker) => {
+    if (marker.source !== "piano") {
+      return;
+    }
+
     const tip = landmarks[marker.tipIndex];
     if (!tip) {
       return;
