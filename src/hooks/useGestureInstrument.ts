@@ -868,6 +868,8 @@ export function useGestureInstrument(): {
         ];
       }
 
+      const isCircleMode = liveSettings.playMode === "circle";
+      const shouldRunPianoTouchPipeline = !isCircleMode || calibrationUpdate.session.active;
       const groupedWhiteTouches = new Map<number, number>();
       const directBlackTouches = new Set<number>();
       const touchSamples: CalibrationTouchSample[] = [];
@@ -877,204 +879,215 @@ export function useGestureInstrument(): {
       const nextFingerDepthSampleTimestampsByHand = emptyHandedFingerDepthSamples();
       const nextTipIntentMemory: Record<string, TipIntentMemory> = {};
 
-      trackedHands.forEach((hand) => {
-        PLAYABLE_FINGERTIP_INDEXES.forEach((tipIndex) => {
-          const tip = hand.landmarks[tipIndex];
-          if (!tip) {
-            return;
-          }
-
-          const projectedX = projectToNoteStripX(
-            tip.x,
-            liveSettings.noteStripSize,
-            0.035,
-            liveSettings.pianoWidthScale
-          );
-          if (
-            projectedX === null ||
-            tip.y < pianoLayout.topY ||
-            tip.y > pianoLayout.bottomY
-          ) {
-            return;
-          }
-
-          const depthScore = getTipDepthScore(hand, tipIndex);
-          if (depthScore === null) {
-            return;
-          }
-
-          const fingertipName = tipIndexToFingerName(tipIndex);
-          const stableHandedness = stableHandednessById.get(hand.id) ?? hand.handedness;
-          const depthGate = liveSettings.depthGate[stableHandedness];
-          const sensitivity =
-            liveSettings.fingerDepthSensitivity[stableHandedness][fingertipName];
-          const effectiveDepthScore = getEffectiveDepthScore(
-            depthScore,
-            sensitivity
-          );
-          nextFingerDepthSamplesByHand[stableHandedness] = recordFingerDepthSample(
-            nextFingerDepthSamplesByHand[stableHandedness],
-            fingertipName,
-            depthScore
-          );
-          nextWeightedFingerDepthSamplesByHand[stableHandedness] = recordFingerDepthSample(
-            nextWeightedFingerDepthSamplesByHand[stableHandedness],
-            fingertipName,
-            effectiveDepthScore
-          );
-          nextFingerDepthSampleTimestampsByHand[stableHandedness] = {
-            ...nextFingerDepthSampleTimestampsByHand[stableHandedness],
-            [fingertipName]: frame.timestamp
-          };
-          touchSamples.push({
-            handedness: stableHandedness,
-            finger: fingertipName,
-            rawDepthScore: depthScore,
-            effectiveDepthScore
-          });
-          const memoryKey = `${stableHandedness}:${tipIndex}`;
-          const previousMemory = tipIntentMemoryRef.current[memoryKey];
-          const touchActivation = getTouchActivation({
-            effectiveDepthScore,
-            depthGate,
-            calibration: liveSettings.touchCalibration[stableHandedness][fingertipName],
-            sensitivity
-          });
-          const elapsedMs = Math.max(frame.timestamp - (previousMemory?.timestamp ?? frame.timestamp), 0);
-          const activationVelocity = getActivationVelocity({
-            previousActivation: previousMemory?.activation ?? null,
-            nextActivation: touchActivation.activation,
-            elapsedMs,
-            previousVelocity: previousMemory?.activationVelocity ?? 0,
-            smoothing:
-              liveSettings.activationTuning[stableHandedness][fingertipName]
-                .activationVelocitySmoothing
-          });
-          const blackZone = resolveBlackKeyHit(projectedX, tip.y, pianoLayout);
-          const whiteZone =
-            blackZone === null
-              ? resolveWhiteKeyHit(
-                  projectedX,
-                  tip.y,
-                  pianoLayout,
-                  getPreviousWhiteZone(previousMemory?.candidateKey)
-                )
-              : null;
-          const candidateKey =
-            blackZone !== null ? `black:${blackZone}` : whiteZone !== null ? `white:${whiteZone}` : null;
-          const stableMs =
-            candidateKey !== null && candidateKey === previousMemory?.candidateKey
-              ? Math.min(
-                  (previousMemory?.stableMs ?? 0) +
-                    Math.max(frame.timestamp - (previousMemory?.timestamp ?? frame.timestamp), 0),
-                  240
-                )
-              : 0;
-          const isPressed = shouldPressTouch({
-            currentKey: candidateKey,
-            previousKey: previousMemory?.candidateKey ?? null,
-            previousPressed: previousMemory?.pressed ?? false,
-            stableMs,
-            activation: touchActivation.activation,
-            activationVelocity,
-            tuning: {
-              hardActivationThreshold:
-                liveSettings.activationTuning[stableHandedness][fingertipName]
-                  .hardActivationThreshold,
-              pressActivationThreshold:
-                liveSettings.activationTuning[stableHandedness][fingertipName]
-                  .pressActivationThreshold,
-              releaseActivationThreshold:
-                liveSettings.activationTuning[stableHandedness][fingertipName]
-                  .releaseActivationThreshold,
-              stablePressMs:
-                liveSettings.activationTuning[stableHandedness][fingertipName].touchDwellMs,
-              pressVelocityThreshold:
-                liveSettings.activationTuning[stableHandedness][fingertipName]
-                  .pressVelocityThreshold,
-              releaseVelocityThreshold:
-                liveSettings.activationTuning[stableHandedness][fingertipName]
-                  .releaseVelocityThreshold
+      if (shouldRunPianoTouchPipeline) {
+        trackedHands.forEach((hand) => {
+          PLAYABLE_FINGERTIP_INDEXES.forEach((tipIndex) => {
+            const tip = hand.landmarks[tipIndex];
+            if (!tip) {
+              return;
             }
+
+            const projectedX = projectToNoteStripX(
+              tip.x,
+              liveSettings.noteStripSize,
+              0.035,
+              liveSettings.pianoWidthScale
+            );
+            if (
+              projectedX === null ||
+              tip.y < pianoLayout.topY ||
+              tip.y > pianoLayout.bottomY
+            ) {
+              return;
+            }
+
+            const depthScore = getTipDepthScore(hand, tipIndex);
+            if (depthScore === null) {
+              return;
+            }
+
+            const fingertipName = tipIndexToFingerName(tipIndex);
+            const stableHandedness = stableHandednessById.get(hand.id) ?? hand.handedness;
+            const depthGate = liveSettings.depthGate[stableHandedness];
+            const sensitivity =
+              liveSettings.fingerDepthSensitivity[stableHandedness][fingertipName];
+            const effectiveDepthScore = getEffectiveDepthScore(depthScore, sensitivity);
+            nextFingerDepthSamplesByHand[stableHandedness] = recordFingerDepthSample(
+              nextFingerDepthSamplesByHand[stableHandedness],
+              fingertipName,
+              depthScore
+            );
+            nextWeightedFingerDepthSamplesByHand[stableHandedness] = recordFingerDepthSample(
+              nextWeightedFingerDepthSamplesByHand[stableHandedness],
+              fingertipName,
+              effectiveDepthScore
+            );
+            nextFingerDepthSampleTimestampsByHand[stableHandedness] = {
+              ...nextFingerDepthSampleTimestampsByHand[stableHandedness],
+              [fingertipName]: frame.timestamp
+            };
+            touchSamples.push({
+              handedness: stableHandedness,
+              finger: fingertipName,
+              rawDepthScore: depthScore,
+              effectiveDepthScore
+            });
+            const memoryKey = `${stableHandedness}:${tipIndex}`;
+            const previousMemory = tipIntentMemoryRef.current[memoryKey];
+            const touchActivation = getTouchActivation({
+              effectiveDepthScore,
+              depthGate,
+              calibration: liveSettings.touchCalibration[stableHandedness][fingertipName],
+              sensitivity
+            });
+            const elapsedMs = Math.max(
+              frame.timestamp - (previousMemory?.timestamp ?? frame.timestamp),
+              0
+            );
+            const activationVelocity = getActivationVelocity({
+              previousActivation: previousMemory?.activation ?? null,
+              nextActivation: touchActivation.activation,
+              elapsedMs,
+              previousVelocity: previousMemory?.activationVelocity ?? 0,
+              smoothing:
+                liveSettings.activationTuning[stableHandedness][fingertipName]
+                  .activationVelocitySmoothing
+            });
+            const blackZone = resolveBlackKeyHit(projectedX, tip.y, pianoLayout);
+            const whiteZone =
+              blackZone === null
+                ? resolveWhiteKeyHit(
+                    projectedX,
+                    tip.y,
+                    pianoLayout,
+                    getPreviousWhiteZone(previousMemory?.candidateKey)
+                  )
+                : null;
+            const candidateKey =
+              blackZone !== null
+                ? `black:${blackZone}`
+                : whiteZone !== null
+                  ? `white:${whiteZone}`
+                  : null;
+            const stableMs =
+              candidateKey !== null && candidateKey === previousMemory?.candidateKey
+                ? Math.min(
+                    (previousMemory?.stableMs ?? 0) +
+                      Math.max(frame.timestamp - (previousMemory?.timestamp ?? frame.timestamp), 0),
+                    240
+                  )
+                : 0;
+            const isPressed = shouldPressTouch({
+              currentKey: candidateKey,
+              previousKey: previousMemory?.candidateKey ?? null,
+              previousPressed: previousMemory?.pressed ?? false,
+              stableMs,
+              activation: touchActivation.activation,
+              activationVelocity,
+              tuning: {
+                hardActivationThreshold:
+                  liveSettings.activationTuning[stableHandedness][fingertipName]
+                    .hardActivationThreshold,
+                pressActivationThreshold:
+                  liveSettings.activationTuning[stableHandedness][fingertipName]
+                    .pressActivationThreshold,
+                releaseActivationThreshold:
+                  liveSettings.activationTuning[stableHandedness][fingertipName]
+                    .releaseActivationThreshold,
+                stablePressMs:
+                  liveSettings.activationTuning[stableHandedness][fingertipName].touchDwellMs,
+                pressVelocityThreshold:
+                  liveSettings.activationTuning[stableHandedness][fingertipName]
+                    .pressVelocityThreshold,
+                releaseVelocityThreshold:
+                  liveSettings.activationTuning[stableHandedness][fingertipName]
+                    .releaseVelocityThreshold
+              }
+            });
+
+            activeTouchMarkers.push({
+              handId: hand.id,
+              stableHandedness,
+              tipIndex,
+              modelZ: tip.z,
+              rawDepthScore: depthScore,
+              sensitivity,
+              depthScore: effectiveDepthScore,
+              activationProgress: touchActivation.activation,
+              activationVelocity,
+              isCalibrated: touchActivation.calibrated,
+              isPressed
+            });
+            nextTipIntentMemory[memoryKey] = {
+              timestamp: frame.timestamp,
+              y: tip.y,
+              effectiveDepthScore,
+              activation: touchActivation.activation,
+              activationVelocity,
+              candidateKey,
+              stableMs,
+              pressed: isPressed
+            };
+
+            if (!isPressed) {
+              return;
+            }
+
+            if (blackZone !== null) {
+              directBlackTouches.add(blackZone);
+              return;
+            }
+
+            if (whiteZone === null) {
+              return;
+            }
+
+            groupedWhiteTouches.set(whiteZone, (groupedWhiteTouches.get(whiteZone) ?? 0) + 1);
           });
-
-          activeTouchMarkers.push({
-            handId: hand.id,
-            stableHandedness,
-            tipIndex,
-            modelZ: tip.z,
-            rawDepthScore: depthScore,
-            sensitivity,
-            depthScore: effectiveDepthScore,
-            activationProgress: touchActivation.activation,
-            activationVelocity,
-            isCalibrated: touchActivation.calibrated,
-            isPressed
-          });
-          nextTipIntentMemory[memoryKey] = {
-            timestamp: frame.timestamp,
-            y: tip.y,
-            effectiveDepthScore,
-            activation: touchActivation.activation,
-            activationVelocity,
-            candidateKey,
-            stableMs,
-            pressed: isPressed
-          };
-
-          if (!isPressed) {
-            return;
-          }
-
-          if (blackZone !== null) {
-            directBlackTouches.add(blackZone);
-            return;
-          }
-
-          if (whiteZone === null) {
-            return;
-          }
-
-          groupedWhiteTouches.set(whiteZone, (groupedWhiteTouches.get(whiteZone) ?? 0) + 1);
         });
-      });
 
-      latestFingerDepthSamplesRef.current = {
-        Left: getCalibrationFingerSamples(nextFingerDepthSamplesByHand, "Left"),
-        Right: getCalibrationFingerSamples(nextFingerDepthSamplesByHand, "Right")
-      };
-      latestWeightedFingerDepthSamplesRef.current = {
-        Left: getCalibrationFingerSamples(nextWeightedFingerDepthSamplesByHand, "Left"),
-        Right: getCalibrationFingerSamples(nextWeightedFingerDepthSamplesByHand, "Right")
-      };
-      latestFingerDepthSampleTimestampsRef.current = {
-        Left: getCalibrationFingerSamples(nextFingerDepthSampleTimestampsByHand, "Left"),
-        Right: getCalibrationFingerSamples(nextFingerDepthSampleTimestampsByHand, "Right")
-      };
-      tipIntentMemoryRef.current = nextTipIntentMemory;
-      latestTouchDepthRef.current = {
-        Left: getCalibrationDepthScore(touchSamples, "Left"),
-        Right: getCalibrationDepthScore(touchSamples, "Right")
-      };
+        latestFingerDepthSamplesRef.current = {
+          Left: getCalibrationFingerSamples(nextFingerDepthSamplesByHand, "Left"),
+          Right: getCalibrationFingerSamples(nextFingerDepthSamplesByHand, "Right")
+        };
+        latestWeightedFingerDepthSamplesRef.current = {
+          Left: getCalibrationFingerSamples(nextWeightedFingerDepthSamplesByHand, "Left"),
+          Right: getCalibrationFingerSamples(nextWeightedFingerDepthSamplesByHand, "Right")
+        };
+        latestFingerDepthSampleTimestampsRef.current = {
+          Left: getCalibrationFingerSamples(nextFingerDepthSampleTimestampsByHand, "Left"),
+          Right: getCalibrationFingerSamples(nextFingerDepthSampleTimestampsByHand, "Right")
+        };
+        tipIntentMemoryRef.current = nextTipIntentMemory;
+        latestTouchDepthRef.current = {
+          Left: getCalibrationDepthScore(touchSamples, "Left"),
+          Right: getCalibrationDepthScore(touchSamples, "Right")
+        };
+      } else {
+        latestFingerDepthSamplesRef.current = emptyHandedFingerDepthSamples();
+        latestWeightedFingerDepthSamplesRef.current = emptyHandedFingerDepthSamples();
+        latestFingerDepthSampleTimestampsRef.current = emptyHandedFingerDepthSamples();
+        tipIntentMemoryRef.current = {};
+        latestTouchDepthRef.current = emptyHandedTouchDepthMap();
+      }
 
-      const { activeNaturalZones, activeSharpZones } = resolveActiveTouchState(
-        groupedWhiteTouches,
-        directBlackTouches,
-        liveSettings.pianoOctaves
-      );
-      const activeSemitones = [
-        ...activeNaturalZones.map((zone) =>
-          naturalZoneToSemitone(zone, false, liveSettings.pianoOctaves)
-        ),
-        ...activeSharpZones.map((zone) =>
-          naturalZoneToSemitone(zone, true, liveSettings.pianoOctaves)
-        )
-      ].sort((left, right) => left - right);
+      const { activeNaturalZones, activeSharpZones } = shouldRunPianoTouchPipeline
+        ? resolveActiveTouchState(groupedWhiteTouches, directBlackTouches, liveSettings.pianoOctaves)
+        : { activeNaturalZones: [], activeSharpZones: [] };
+      const activeSemitones = shouldRunPianoTouchPipeline
+        ? [
+            ...activeNaturalZones.map((zone) =>
+              naturalZoneToSemitone(zone, false, liveSettings.pianoOctaves)
+            ),
+            ...activeSharpZones.map((zone) =>
+              naturalZoneToSemitone(zone, true, liveSettings.pianoOctaves)
+            )
+          ].sort((left, right) => left - right)
+        : [];
       const activeMidiNotes = activeSemitones.map((semitone) => getRootMidi(semitone));
       const activeNoteLabels = activeSemitones.map((semitone) =>
         describeRootSemitone(semitone, liveSettings.labelStyle)
       );
-      const isCircleMode = liveSettings.playMode === "circle";
       const circleSegmentSets: Record<Handedness, Set<number>> = {
         Left: new Set<number>(),
         Right: new Set<number>()
