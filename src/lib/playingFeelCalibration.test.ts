@@ -1,5 +1,10 @@
 import {
+  CALIBRATION_STABILITY_THRESHOLDS,
+  CONTROL_GESTURE_THRESHOLDS
+} from "./constants";
+import {
   acceptPlayingFeelCalibration,
+  getCalibrationAcceptedControlZones,
   getCalibrationControlZone,
   isPalmInsideControlZone,
   retryPlayingFeelCalibration,
@@ -77,7 +82,7 @@ describe("playing feel calibration", () => {
       roleAmbiguous: false
     }).session;
     session = updatePlayingFeelCalibrationSession(session, {
-      timestamp: 700,
+      timestamp: CONTROL_GESTURE_THRESHOLDS.stableMs + 50,
       targetSample: null,
       controlGesture: "fist",
       controlHandVisible: true,
@@ -123,6 +128,15 @@ describe("playing feel calibration", () => {
 
     expect(session.rehearsal).toEqual({ fist: true, pinch: true, open: true });
     expect(session.phase).toBe("capture-hover");
+  });
+
+  it("lets keyboard or button accept skip gesture rehearsal when gestures are unreliable", () => {
+    const started = startPlayingFeelCalibration("Left", 0);
+    const accepted = acceptPlayingFeelCalibration(started, 100);
+
+    expect(accepted.session.phase).toBe("capture-hover");
+    expect(accepted.session.rehearsal).toEqual({ fist: true, pinch: true, open: true });
+    expect(accepted.session.guidance).toContain("Control rehearsal skipped");
   });
 
   it("captures hover, tap cycles, and emits a calibration commit", () => {
@@ -201,6 +215,27 @@ describe("playing feel calibration", () => {
         "Right",
         { topY: 0.6, bottomY: 0.9 },
         { left: 0.04, right: 0.96 }
+      )
+    ).toBe(false);
+  });
+
+  it("returns only the actually accepted control-zone regions for the overlay", () => {
+    const zones = getCalibrationAcceptedControlZones(
+      "Right",
+      { topY: 0.6, bottomY: 0.9 },
+      { left: 0.04, right: 0.96 }
+    );
+
+    expect(zones).toContainEqual({ left: 0.64, right: 0.98, top: 0.08, bottom: 0.6 });
+    expect(zones).toContainEqual({ left: 0.64, right: 0.98, top: 0.9, bottom: 0.92 });
+    expect(zones).toContainEqual({ left: 0.96, right: 0.98, top: 0.6, bottom: 0.9 });
+    expect(
+      zones.some(
+        (zone) =>
+          zone.left < 0.8 &&
+          zone.right > 0.8 &&
+          zone.top < 0.7 &&
+          zone.bottom > 0.7
       )
     ).toBe(false);
   });
@@ -302,13 +337,33 @@ describe("playing feel calibration", () => {
     expect(releasedOutside.session.phase).toBe("capture-hover");
   });
 
+  it("does not pause while the target fingertip is visible even if the control hand leaves", () => {
+    let session = {
+      ...startPlayingFeelCalibration("Left", 0),
+      phase: "capture-hover" as const,
+      phaseStartedAt: 0
+    };
+
+    session = updatePlayingFeelCalibrationSession(session, {
+      timestamp: CONTROL_GESTURE_THRESHOLDS.handAwayPauseMs + 200,
+      targetSample: sample(CONTROL_GESTURE_THRESHOLDS.handAwayPauseMs + 200, 0.01),
+      controlGesture: "none",
+      controlHandVisible: false,
+      controlInsideZone: false,
+      roleAmbiguous: false
+    }).session;
+
+    expect(session.phase).toBe("capture-hover");
+    expect(session.handAwaySince).toBeNull();
+  });
+
   it("resets hover capture progress after a target-sample gap", () => {
     let session = {
       ...startPlayingFeelCalibration("Left", 0),
       phase: "capture-hover" as const
     };
 
-    for (let index = 0; index < 23; index += 1) {
+    for (let index = 0; index < CALIBRATION_STABILITY_THRESHOLDS.hoverMinFrames - 1; index += 1) {
       session = update(session, index * 34, sample(index * 34, 0.01));
     }
 

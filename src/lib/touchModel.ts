@@ -7,7 +7,7 @@ export const FINGER_SENSITIVITY_BOUNDS = {
 } as const;
 
 const MIN_VISUAL_GATE = 0.02;
-const MIN_CALIBRATION_RANGE = 0.003;
+const MIN_CALIBRATION_RANGE = 0.001;
 const MAX_ACTIVATION_VELOCITY = 60;
 
 export interface TouchIntentTuning {
@@ -103,7 +103,16 @@ export function getTouchActivation(input: {
     ? (input.calibration.rawPressDepth ?? input.calibration.rawHoverDepth ?? 0) *
       (input.sensitivity ?? 1)
     : input.calibration.pressDepth ?? hoverDepth;
-  const range = Math.max(Math.abs(pressDepth - hoverDepth), MIN_CALIBRATION_RANGE);
+  const noiseGuard =
+    typeof input.calibration.noiseFloor === "number" &&
+    Number.isFinite(input.calibration.noiseFloor)
+      ? input.calibration.noiseFloor * 2
+      : 0;
+  const range = Math.max(
+    Math.abs(pressDepth - hoverDepth),
+    noiseGuard,
+    MIN_CALIBRATION_RANGE
+  );
   const direction = input.calibration.direction;
 
   return {

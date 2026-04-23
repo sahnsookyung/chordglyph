@@ -52,6 +52,15 @@ describe("pianoLayout helpers", () => {
     );
   });
 
+  it("allows the frontend height scale to reach three times the base height", () => {
+    const layout = getPianoLayout(undefined, 0, 3);
+    const bounds = getPianoVerticalOffsetBounds(3);
+    const topAligned = getPianoLayout(undefined, bounds.max, 3);
+
+    expect(layout.heightRatio).toBeCloseTo(0.84, 5);
+    expect(topAligned.topY).toBeCloseTo(0, 5);
+  });
+
   it("lets a single fingertip hit a black key directly", () => {
     const layout = getPianoLayout();
     const key = layout.blackKeys[0];

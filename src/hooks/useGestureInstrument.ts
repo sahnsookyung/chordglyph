@@ -7,7 +7,7 @@ import {
   type MutableRefObject
 } from "react";
 import { averageHandX } from "../lib/assignment";
-import { DEFAULT_SETTINGS } from "../lib/constants";
+import { CALIBRATION_STABILITY_THRESHOLDS, DEFAULT_SETTINGS } from "../lib/constants";
 import { extractHandFeatures } from "../lib/featureExtraction";
 import { ema, lerp } from "../lib/geometry";
 import { initialInteractionState, type InteractionState } from "../lib/interactionMachine";
@@ -750,8 +750,8 @@ export function useGestureInstrument(): {
             liveSettings.pianoWidthScale
           );
           const inHoverMargin =
-            tip.y >= pianoLayout.topY - 0.025 &&
-            tip.y <= pianoLayout.bottomY + 0.025;
+            tip.y >= pianoLayout.topY - CALIBRATION_STABILITY_THRESHOLDS.hoverAcquisitionMargin &&
+            tip.y <= pianoLayout.bottomY + CALIBRATION_STABILITY_THRESHOLDS.hoverAcquisitionMargin;
           const sensitivity =
             liveSettings.fingerDepthSensitivity[calibrationSession.targetHand][
               calibrationSession.targetFinger

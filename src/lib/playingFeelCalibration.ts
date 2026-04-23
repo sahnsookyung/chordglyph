@@ -265,6 +265,35 @@ export function getCalibrationControlZone(controlHand: Handedness): CalibrationC
     : { left: 0.64, right: 0.98, top: 0.08, bottom: 0.92 };
 }
 
+export function getCalibrationAcceptedControlZones(
+  controlHand: Handedness,
+  pianoBounds: { topY: number; bottomY: number },
+  stripBounds: { left: number; right: number }
+): CalibrationControlZone[] {
+  const zone = getCalibrationControlZone(controlHand);
+  const blocked = {
+    left: Math.max(zone.left, stripBounds.left),
+    right: Math.min(zone.right, stripBounds.right),
+    top: Math.max(zone.top, pianoBounds.topY),
+    bottom: Math.min(zone.bottom, pianoBounds.bottomY)
+  };
+
+  if (blocked.left >= blocked.right || blocked.top >= blocked.bottom) {
+    return [zone];
+  }
+
+  const candidates: CalibrationControlZone[] = [
+    { left: zone.left, right: zone.right, top: zone.top, bottom: blocked.top },
+    { left: zone.left, right: zone.right, top: blocked.bottom, bottom: zone.bottom },
+    { left: zone.left, right: blocked.left, top: blocked.top, bottom: blocked.bottom },
+    { left: blocked.right, right: zone.right, top: blocked.top, bottom: blocked.bottom }
+  ];
+
+  return candidates.filter(
+    (candidate) => candidate.right - candidate.left > 0.001 && candidate.bottom - candidate.top > 0.001
+  );
+}
+
 export function isPalmInsideControlZone(
   palm: Landmark | null,
   controlHand: Handedness,
@@ -347,6 +376,24 @@ function roundCalibrationNumber(value: number, digits = 5): number {
   return Number(value.toFixed(digits));
 }
 
+function getSampleResolvedKey(sample: CalibrationFrameSample): string | null {
+  return sample.candidateKey ?? sample.nearKey;
+}
+
+function mostCommonString(values: string[]): string | null {
+  if (values.length === 0) {
+    return null;
+  }
+
+  const counts = new Map<string, number>();
+  values.forEach((value) => counts.set(value, (counts.get(value) ?? 0) + 1));
+  return [...counts.entries()].sort((left, right) => right[1] - left[1])[0]?.[0] ?? null;
+}
+
+function getTapExcursionThreshold(hover: CalibrationHoverResult): number {
+  return Math.max(0.0012, hover.noiseFloor * 2.5);
+}
+
 function scoreToLabel(score: number): CalibrationQualityLabel {
   if (score >= CALIBRATION_QUALITY_THRESHOLDS.good) {
     return "Good";
@@ -371,7 +418,7 @@ function getTapConfirmationGuidance(tap: CalibrationTapResult, cycles: number): 
 
 function summarizeHoverSamples(samples: CalibrationFrameSample[]): CalibrationHoverResult | null {
   const usableSamples = samples
-    .filter((sample) => sample.visible && (sample.candidateKey !== null || sample.nearKey !== null))
+    .filter((sample) => sample.visible && getSampleResolvedKey(sample) !== null)
     .slice(-90);
   if (usableSamples.length < CALIBRATION_STABILITY_THRESHOLDS.hoverMinFrames) {
     return null;
@@ -395,9 +442,11 @@ function summarizeHoverSamples(samples: CalibrationFrameSample[]): CalibrationHo
     return null;
   }
 
-  const targetKey =
-    usableSamples.find((sample) => sample.candidateKey)?.candidateKey ??
-    usableSamples.find((sample) => sample.nearKey)?.nearKey;
+  const targetKey = mostCommonString(
+    usableSamples
+      .map((sample) => getSampleResolvedKey(sample))
+      .filter((key): key is string => key !== null)
+  );
   if (!targetKey) {
     return null;
   }
@@ -425,7 +474,9 @@ function detectTapCycles(
   samples: CalibrationFrameSample[],
   hover: CalibrationHoverResult
 ): Array<{ peak: CalibrationFrameSample; peakDelta: number; startIndex: number; endIndex: number }> {
-  const validSamples = samples.filter((sample) => sample.visible && sample.candidateKey !== null);
+  const validSamples = samples.filter(
+    (sample) => sample.visible && getSampleResolvedKey(sample) === hover.targetKey
+  );
   if (validSamples.length < 8) {
     return [];
   }
@@ -434,7 +485,7 @@ function detectTapCycles(
   const positivePeak = Math.max(...deltas);
   const negativePeak = Math.min(...deltas);
   const direction: -1 | 1 = positivePeak >= Math.abs(negativePeak) ? 1 : -1;
-  const threshold = Math.max(0.004, hover.noiseFloor * 4);
+  const threshold = getTapExcursionThreshold(hover);
   const releaseThreshold = threshold * 0.35;
   const cycles: Array<{ peak: CalibrationFrameSample; peakDelta: number; startIndex: number; endIndex: number }> = [];
   let pressing = false;
@@ -472,7 +523,9 @@ function summarizeTapSamples(
   samples: CalibrationFrameSample[],
   hover: CalibrationHoverResult
 ): CalibrationTapResult | null {
-  const validSamples = samples.filter((sample) => sample.visible && sample.candidateKey !== null);
+  const validSamples = samples.filter(
+    (sample) => sample.visible && getSampleResolvedKey(sample) === hover.targetKey
+  );
   if (validSamples.length < 12) {
     return null;
   }
@@ -509,7 +562,7 @@ function summarizeTapSamples(
   const directionAgreement =
     validSamples.filter((sample) => (sample.weightedDepth - hover.weightedDepth) * direction >= 0).length /
     Math.max(validSamples.length, 1);
-  const rangeScore = clamp((pressDelta - Math.max(0.004, hover.noiseFloor * 4)) / 0.02);
+  const rangeScore = clamp((pressDelta - getTapExcursionThreshold(hover)) / 0.012);
   const cycleScore = clamp(cycles.length / 3);
   const returnScore = clamp(
     1 -
@@ -888,6 +941,22 @@ function acceptCurrentPhase(
     };
   }
 
+  if (session.phase === "control-rehearsal") {
+    return {
+      session: resetForCapture(
+        {
+          ...session,
+          rehearsal: { fist: true, pinch: true, open: true }
+        },
+        "capture-hover",
+        timestamp,
+        `Control rehearsal skipped. Center your ${session.targetHand.toLowerCase()} ${session.targetFinger} over a key and hold steady.`
+      ),
+      commit: null,
+      cue: "success"
+    };
+  }
+
   if (session.phase === "confirm-hover" && session.pendingHover) {
     return {
       session: resetForCapture(
@@ -1039,7 +1108,9 @@ export function updatePlayingFeelCalibrationSession(
       ? current.roleAmbiguousSince ?? input.timestamp
       : null,
     handAwaySince:
-      !input.controlHandVisible && current.phase !== "control-rehearsal"
+      !input.controlHandVisible &&
+      current.phase !== "control-rehearsal" &&
+      input.targetSample === null
         ? current.handAwaySince ?? input.timestamp
         : null
   };
@@ -1255,9 +1326,9 @@ export function updatePlayingFeelCalibrationSession(
       previewMidiNote:
         session.acceptedHover &&
         input.targetSample &&
-        input.targetSample.candidateKey !== null &&
+        getSampleResolvedKey(input.targetSample) === session.acceptedHover.targetKey &&
         Math.abs(input.targetSample.weightedDepth - session.acceptedHover.weightedDepth) >
-          Math.max(0.004, session.acceptedHover.noiseFloor * 4)
+          getTapExcursionThreshold(session.acceptedHover)
           ? input.targetSample.midiNote
           : null,
       guidance: tap

@@ -6,10 +6,11 @@ import {
 import {
   getPianoLayout,
   getPianoVerticalOffsetBounds,
+  MAX_PIANO_HEIGHT_SCALE,
   getWhiteHitSegments
 } from "./lib/pianoLayout";
 import { getStripBounds } from "./lib/noteMapping";
-import { getCalibrationControlZone } from "./lib/playingFeelCalibration";
+import { getCalibrationAcceptedControlZones } from "./lib/playingFeelCalibration";
 import type {
   CalibrationScope,
   FingerActivationTuning,
@@ -424,9 +425,22 @@ export default function App() {
   const hasFingerDepthSamples = FINGERTIP_SENSITIVITY_CONTROLS.some(
     ({ key }) => state.debug.fingerDepthSamplesFresh[calibrationHand][key]
   );
-  const calibrationControlZone = state.calibrationSession.active
-    ? getCalibrationControlZone(state.calibrationSession.controlHand)
-    : null;
+  const calibrationControlZones = useMemo(
+    () =>
+      state.calibrationSession.active
+        ? getCalibrationAcceptedControlZones(
+            state.calibrationSession.controlHand,
+            pianoLayout,
+            pianoHorizontalBounds
+          )
+        : [],
+    [
+      pianoHorizontalBounds,
+      pianoLayout,
+      state.calibrationSession.active,
+      state.calibrationSession.controlHand
+    ]
+  );
   const calibrationHandProgress =
     state.calibrationSession.handQueue.length === 0
       ? "0 / 0"
@@ -1123,7 +1137,7 @@ export default function App() {
           <RangeNumberControl
             label="Key height"
             min={0.8}
-            max={1.45}
+            max={MAX_PIANO_HEIGHT_SCALE}
             step={0.01}
             value={state.settings.pianoHeightScale}
             onChange={(value) => updateSettings({ pianoHeightScale: value })}
@@ -1360,19 +1374,24 @@ export default function App() {
 
             {state.calibrationSession.active ? (
               <>
-                {calibrationControlZone ? (
+                {calibrationControlZones.map((zone, index) => (
                   <div
+                    key={`calibration-control-zone-${index}`}
                     className="calibration-control-zone"
                     style={{
-                      left: `${calibrationControlZone.left * 100}%`,
-                      top: `${calibrationControlZone.top * 100}%`,
-                      width: `${(calibrationControlZone.right - calibrationControlZone.left) * 100}%`,
-                      height: `${(calibrationControlZone.bottom - calibrationControlZone.top) * 100}%`
+                      left: `${zone.left * 100}%`,
+                      top: `${zone.top * 100}%`,
+                      width: `${(zone.right - zone.left) * 100}%`,
+                      height: `${(zone.bottom - zone.top) * 100}%`
                     }}
                   >
-                    <span>{state.calibrationSession.controlHand} control zone</span>
+                    <span>
+                      {index === 0
+                        ? `${state.calibrationSession.controlHand} signs accepted here`
+                        : "accepted here"}
+                    </span>
                   </div>
-                ) : null}
+                ))}
                 <div className="calibration-overlay">
                   <div className="legend-header">
                     <h2>Playing Feel</h2>

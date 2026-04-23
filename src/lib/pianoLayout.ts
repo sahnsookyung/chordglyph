@@ -11,6 +11,8 @@ import {
 export const PLAYABLE_FINGERTIP_INDEXES = [4, 8, 12, 16, 20] as const;
 export const BASE_PIANO_BOTTOM_OFFSET = 0.12;
 export const BASE_PIANO_HEIGHT_RATIO = 0.28;
+export const MAX_PIANO_HEIGHT_SCALE = 3;
+export const MAX_PIANO_HEIGHT_RATIO = BASE_PIANO_HEIGHT_RATIO * MAX_PIANO_HEIGHT_SCALE;
 export const PIANO_BLACK_KEY_TOP_INSET_RATIO = 0.02;
 export const PIANO_HITBOX_HORIZONTAL_GAP_RATIO = 0.08;
 export const PIANO_HITBOX_VERTICAL_GAP_RATIO = 0.012;
@@ -62,7 +64,11 @@ export function getPianoLayout(
   pianoVerticalOffset = 0,
   pianoHeightScale = 1
 ): PianoLayout {
-  const heightRatio = clamp(BASE_PIANO_HEIGHT_RATIO * pianoHeightScale, 0.18, 0.42);
+  const heightRatio = clamp(
+    BASE_PIANO_HEIGHT_RATIO * pianoHeightScale,
+    0.18,
+    MAX_PIANO_HEIGHT_RATIO
+  );
   const verticalBounds = getPianoVerticalOffsetBounds(pianoHeightScale);
   const bottomOffset = clamp(
     BASE_PIANO_BOTTOM_OFFSET + pianoVerticalOffset,
@@ -108,7 +114,11 @@ export function getPianoLayout(
 }
 
 export function getPianoVerticalOffsetBounds(pianoHeightScale = 1): { min: number; max: number } {
-  const heightRatio = clamp(BASE_PIANO_HEIGHT_RATIO * pianoHeightScale, 0.18, 0.42);
+  const heightRatio = clamp(
+    BASE_PIANO_HEIGHT_RATIO * pianoHeightScale,
+    0.18,
+    MAX_PIANO_HEIGHT_RATIO
+  );
 
   return {
     min: -BASE_PIANO_BOTTOM_OFFSET,

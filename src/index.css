@@ -690,7 +690,18 @@ button {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   background: rgba(15, 118, 110, 0.08);
+  overflow: hidden;
   pointer-events: none;
+}
+
+.calibration-control-zone span {
+  max-width: calc(100% - 12px);
+  overflow: hidden;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(7, 18, 24, 0.55);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .calibration-overlay {

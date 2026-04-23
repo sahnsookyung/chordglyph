@@ -96,14 +96,14 @@ export const CALIBRATION_QUALITY_THRESHOLDS = {
 } as const;
 
 export const CALIBRATION_STABILITY_THRESHOLDS = {
-  hoverMinFrames: 24,
-  hoverMinDurationMs: 800,
-  hoverMaxXyStdDev: 0.018,
-  hoverMaxDepthStdDev: 0.0015,
+  hoverMinFrames: 18,
+  hoverMinDurationMs: 600,
+  hoverMaxXyStdDev: 0.028,
+  hoverMaxDepthStdDev: 0.003,
   tapMinCycles: 2,
   tapTimeoutMs: 15000,
-  sampleGapResetMs: 260,
-  hoverAcquisitionMargin: 0.025
+  sampleGapResetMs: 420,
+  hoverAcquisitionMargin: 0.045
 } as const;
 
 export const CONTROL_GESTURE_THRESHOLDS = {
