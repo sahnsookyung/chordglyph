@@ -2,8 +2,10 @@ import {
   buildVoicing,
   describeChord,
   describeRootSemitone,
+  getNaturalKeyCount,
   getVisibleBlackKeys,
   getVisibleKeyNames,
+  naturalZoneSupportsSharp,
   naturalZoneToSemitone
 } from "./music";
 
@@ -79,5 +81,41 @@ describe("music helpers", () => {
     expect(naturalZoneToSemitone(28, false)).toBe(48);
     expect(describeRootSemitone(48, "sharps")).toBe("C");
     expect(describeRootSemitone(49, "flats")).toBe("Db");
+  });
+
+  it("generates visible natural and black keys for configurable octave counts", () => {
+    expect(getNaturalKeyCount(2)).toBe(15);
+    expect(getVisibleKeyNames(2)).toEqual([
+      "C",
+      "D",
+      "E",
+      "F",
+      "G",
+      "A",
+      "B",
+      "C",
+      "D",
+      "E",
+      "F",
+      "G",
+      "A",
+      "B",
+      "C"
+    ]);
+    expect(getVisibleBlackKeys(2).map((key) => key.sourceIndex)).toEqual([
+      0,
+      1,
+      3,
+      4,
+      5,
+      7,
+      8,
+      10,
+      11,
+      12
+    ]);
+    expect(naturalZoneToSemitone(14, false, 2)).toBe(24);
+    expect(naturalZoneSupportsSharp(12, 2)).toBe(true);
+    expect(naturalZoneSupportsSharp(14, 2)).toBe(false);
   });
 });

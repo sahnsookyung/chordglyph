@@ -107,4 +107,13 @@ describe("normalizeInstrumentSettings", () => {
     expect(normalized.audioOutputDeviceId).toBe("bluez-headphones");
     expect(normalized.trackingBackend).toBe("mediapipe-hands");
   });
+
+  it("normalizes piano octave count to an integer in the supported range", () => {
+    expect(normalizeInstrumentSettings({ pianoOctaves: 2.4 }).pianoOctaves).toBe(2);
+    expect(normalizeInstrumentSettings({ pianoOctaves: 99 }).pianoOctaves).toBe(6);
+    expect(normalizeInstrumentSettings({ pianoOctaves: -1 }).pianoOctaves).toBe(1);
+    expect(normalizeInstrumentSettings({ pianoOctaves: "wide" }).pianoOctaves).toBe(
+      DEFAULT_SETTINGS.pianoOctaves
+    );
+  });
 });

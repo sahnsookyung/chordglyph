@@ -14,6 +14,7 @@ import { initialInteractionState, type InteractionState } from "../lib/interacti
 import { SessionLogger } from "../lib/logger";
 import {
   describeRootSemitone,
+  getNaturalKeyCount,
   getRootMidi,
   naturalZoneToSemitone
 } from "../lib/music";
@@ -160,7 +161,7 @@ const FINGER_NAME_TO_TIP_INDEX: Record<FingertipName, 4 | 8 | 12 | 16 | 20> = {
   pinky: 20
 };
 
-function keyToMidiNote(candidateKey: string | null): number | null {
+function keyToMidiNote(candidateKey: string | null, octaveCount: number): number | null {
   if (!candidateKey) {
     return null;
   }
@@ -171,7 +172,7 @@ function keyToMidiNote(candidateKey: string | null): number | null {
     return null;
   }
 
-  return getRootMidi(naturalZoneToSemitone(zone, kind === "black"));
+  return getRootMidi(naturalZoneToSemitone(zone, kind === "black", octaveCount));
 }
 
 function resolvePianoKeyAt(
@@ -679,16 +680,19 @@ export function useGestureInstrument(): {
         liveSettings.noteStripSize,
         liveSettings.pianoWidthScale,
         liveSettings.pianoVerticalOffset,
-        liveSettings.pianoHeightScale
+        liveSettings.pianoHeightScale,
+        liveSettings.pianoOctaves
       ].join("|");
       let frameGeometry = frameGeometryRef.current;
       if (!frameGeometry || frameGeometry.key !== geometryKey) {
+        const noteCount = getNaturalKeyCount(liveSettings.pianoOctaves);
         frameGeometry = {
           key: geometryKey,
           pianoLayout: getPianoLayout(
-            undefined,
+            noteCount,
             liveSettings.pianoVerticalOffset,
-            liveSettings.pianoHeightScale
+            liveSettings.pianoHeightScale,
+            liveSettings.pianoOctaves
           ),
           stripBounds: getStripBounds(liveSettings.noteStripSize, liveSettings.pianoWidthScale)
         };
@@ -780,7 +784,7 @@ export function useGestureInstrument(): {
             sensitivity,
             candidateKey,
             nearKey: candidateKey ?? looseZone,
-            midiNote: keyToMidiNote(candidateKey ?? looseZone),
+            midiNote: keyToMidiNote(candidateKey ?? looseZone, liveSettings.pianoOctaves),
             visible: inHoverMargin && looseProjectedX !== null
           };
         }
@@ -1026,11 +1030,16 @@ export function useGestureInstrument(): {
 
       const { activeNaturalZones, activeSharpZones } = resolveActiveTouchState(
         groupedWhiteTouches,
-        directBlackTouches
+        directBlackTouches,
+        liveSettings.pianoOctaves
       );
       const activeSemitones = [
-        ...activeNaturalZones.map((zone) => naturalZoneToSemitone(zone, false)),
-        ...activeSharpZones.map((zone) => naturalZoneToSemitone(zone, true))
+        ...activeNaturalZones.map((zone) =>
+          naturalZoneToSemitone(zone, false, liveSettings.pianoOctaves)
+        ),
+        ...activeSharpZones.map((zone) =>
+          naturalZoneToSemitone(zone, true, liveSettings.pianoOctaves)
+        )
       ].sort((left, right) => left - right);
       const activeMidiNotes = activeSemitones.map((semitone) => getRootMidi(semitone));
       const activeNoteLabels = activeSemitones.map((semitone) =>
@@ -1126,7 +1135,10 @@ export function useGestureInstrument(): {
         displayedActiveSemitones.length > 0
           ? displayedActiveNoteLabels.join(" ")
           : smoothedNoteX !== null && displayedActiveNaturalZones[0] !== undefined
-            ? describeRootSemitone(naturalZoneToSemitone(displayedActiveNaturalZones[0]), liveSettings.labelStyle)
+            ? describeRootSemitone(
+                naturalZoneToSemitone(displayedActiveNaturalZones[0], false, liveSettings.pianoOctaves),
+                liveSettings.labelStyle
+              )
             : null;
       const currentChordLabel =
         displayedActiveNoteLabels.length > 0 ? displayedActiveNoteLabels.join(" • ") : "Waiting for touch";

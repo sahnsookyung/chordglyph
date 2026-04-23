@@ -1,8 +1,10 @@
-import { NOTE_COUNT } from "./constants";
+import { DEFAULT_PIANO_OCTAVES, NOTE_COUNT } from "./constants";
 import { clamp } from "./geometry";
 import { resolveNoteZone } from "./noteMapping";
 import {
   getVisibleBlackKeys,
+  getNaturalKeyCount,
+  normalizePianoOctaves,
   PIANO_BLACK_KEY_HEIGHT_RATIO,
   PIANO_BLACK_KEY_WIDTH_RATIO,
   naturalZoneSupportsSharp
@@ -27,6 +29,8 @@ export interface PianoBlackKeyLayout {
 }
 
 export interface PianoLayout {
+  noteCount: number;
+  octaveCount: number;
   bottomOffset: number;
   heightRatio: number;
   topY: number;
@@ -60,10 +64,13 @@ function getHitGapY(heightRatio: number): number {
 }
 
 export function getPianoLayout(
-  noteCount = NOTE_COUNT,
+  noteCount?: number,
   pianoVerticalOffset = 0,
-  pianoHeightScale = 1
+  pianoHeightScale = 1,
+  pianoOctaves = DEFAULT_PIANO_OCTAVES
 ): PianoLayout {
+  const octaveCount = normalizePianoOctaves(pianoOctaves);
+  const resolvedNoteCount = noteCount ?? getNaturalKeyCount(octaveCount);
   const heightRatio = clamp(
     BASE_PIANO_HEIGHT_RATIO * pianoHeightScale,
     0.18,
@@ -75,9 +82,9 @@ export function getPianoLayout(
     BASE_PIANO_BOTTOM_OFFSET + verticalBounds.min,
     BASE_PIANO_BOTTOM_OFFSET + verticalBounds.max
   );
-  const whiteKeyWidth = 1 / noteCount;
+  const whiteKeyWidth = 1 / resolvedNoteCount;
   const hitGapX = getHitGapX(whiteKeyWidth);
-  const blackKeys = getVisibleBlackKeys().map((key) => ({
+  const blackKeys = getVisibleBlackKeys(octaveCount).map((key) => ({
     ...key,
     centerX: (key.sourceIndex + 1) * whiteKeyWidth,
     widthRatio: Math.max(whiteKeyWidth * PIANO_BLACK_KEY_WIDTH_RATIO - hitGapX * 2, whiteKeyWidth * 0.18),
@@ -97,6 +104,8 @@ export function getPianoLayout(
   const blackKeyBottomY =
     topY + heightRatio * PIANO_BLACK_KEY_HEIGHT_RATIO - hitGapY;
   const layoutBase = {
+    noteCount: resolvedNoteCount,
+    octaveCount,
     bottomOffset,
     heightRatio,
     topY,
@@ -105,7 +114,7 @@ export function getPianoLayout(
     blackKeyBottomY,
     blackKeys
   };
-  const whiteHitSegments = buildWhiteHitSegments(layoutBase, noteCount);
+  const whiteHitSegments = buildWhiteHitSegments(layoutBase, resolvedNoteCount);
 
   return {
     ...layoutBase,
@@ -209,14 +218,14 @@ export function resolveWhiteKeyHit(
   normalizedY: number,
   layout: PianoLayout,
   previousZone: number | null,
-  noteCount = NOTE_COUNT
+  noteCount = layout.noteCount
 ): number | null {
   if (normalizedY < layout.topY || normalizedY > layout.bottomY) {
     return null;
   }
 
   if (normalizedY > layout.blackKeyBottomY + getHitGapY(layout.bottomY - layout.topY)) {
-    return resolveNoteZone(normalizedX, previousZone);
+    return resolveNoteZone(normalizedX, previousZone, noteCount);
   }
 
   if (normalizedY > layout.blackKeyBottomY) {
@@ -236,10 +245,11 @@ export function resolveWhiteKeyHit(
 
 export function resolveActiveTouchState(
   groupedWhiteTouches: Map<number, number>,
-  directBlackTouches: Set<number>
+  directBlackTouches: Set<number>,
+  octaveCount = DEFAULT_PIANO_OCTAVES
 ): PianoTouchState {
   const fallbackSharpZones = [...groupedWhiteTouches.keys()].filter(
-    (zone) => (groupedWhiteTouches.get(zone) ?? 0) >= 2 && naturalZoneSupportsSharp(zone)
+    (zone) => (groupedWhiteTouches.get(zone) ?? 0) >= 2 && naturalZoneSupportsSharp(zone, octaveCount)
   );
   const activeSharpZones = [...new Set([...directBlackTouches, ...fallbackSharpZones])].sort(
     (left, right) => left - right

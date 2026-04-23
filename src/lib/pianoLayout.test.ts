@@ -61,6 +61,17 @@ describe("pianoLayout helpers", () => {
     expect(topAligned.topY).toBeCloseTo(0, 5);
   });
 
+  it("derives key and black-key geometry from the octave count", () => {
+    const twoOctaveLayout = getPianoLayout(undefined, 0, 1, 2);
+    const sixOctaveLayout = getPianoLayout(undefined, 0, 1, 6);
+
+    expect(twoOctaveLayout.noteCount).toBe(15);
+    expect(twoOctaveLayout.blackKeys).toHaveLength(10);
+    expect(twoOctaveLayout.blackKeys.at(-1)?.sourceIndex).toBe(12);
+    expect(sixOctaveLayout.noteCount).toBe(43);
+    expect(sixOctaveLayout.blackKeys).toHaveLength(30);
+  });
+
   it("lets a single fingertip hit a black key directly", () => {
     const layout = getPianoLayout();
     const key = layout.blackKeys[0];

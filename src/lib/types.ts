@@ -128,6 +128,7 @@ export interface InstrumentSettings {
   pianoVerticalOffset: number;
   pianoHeightScale: number;
   pianoWidthScale: number;
+  pianoOctaves: number;
   pianoOpacity: number;
   showHitBoxes: boolean;
   hitBoxColor: string;

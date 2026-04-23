@@ -1,4 +1,4 @@
-import { DEFAULT_SETTINGS } from "./constants";
+import { DEFAULT_SETTINGS, MAX_PIANO_OCTAVES, MIN_PIANO_OCTAVES } from "./constants";
 import {
   createFingerActivationTuning,
   createFingerActivationTuningMap,
@@ -47,6 +47,10 @@ function asOneOf<T extends string>(value: unknown, allowed: readonly T[], fallba
 
 function clampNumber(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function normalizeInteger(value: unknown, fallback: number, min: number, max: number): number {
+  return clampNumber(Math.round(asFiniteNumber(value, fallback)), min, max);
 }
 
 function normalizeSingleFingerSensitivity(
@@ -368,6 +372,12 @@ export function normalizeInstrumentSettings(value: unknown): InstrumentSettings 
     pianoWidthScale: asFiniteNumber(
       persisted.pianoWidthScale,
       DEFAULT_SETTINGS.pianoWidthScale
+    ),
+    pianoOctaves: normalizeInteger(
+      persisted.pianoOctaves,
+      DEFAULT_SETTINGS.pianoOctaves,
+      MIN_PIANO_OCTAVES,
+      MAX_PIANO_OCTAVES
     ),
     pianoOpacity: asFiniteNumber(persisted.pianoOpacity, DEFAULT_SETTINGS.pianoOpacity),
     showHitBoxes: asBoolean(persisted.showHitBoxes, DEFAULT_SETTINGS.showHitBoxes),

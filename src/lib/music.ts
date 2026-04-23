@@ -1,7 +1,13 @@
 import {
+  DEFAULT_PIANO_OCTAVES,
+  MAX_PIANO_OCTAVES,
+  MIN_PIANO_OCTAVES,
+  NATURAL_OCTAVE,
   NATURAL_NOTE_TO_SEMITONE,
+  NATURAL_OCTAVE_SEMITONES,
   NOTE_NAMES_FLATS,
   NOTE_NAMES_SHARPS,
+  SHARP_CAPABLE_OFFSETS,
   SHARP_CAPABLE_NATURAL_INDEXES,
   VISIBLE_NATURAL_NOTE_NAMES
 } from "./constants";
@@ -22,36 +28,96 @@ export function getNoteNames(style: NoteLabelStyle): readonly string[] {
   return style === "flats" ? NOTE_NAMES_FLATS : NOTE_NAMES_SHARPS;
 }
 
-export function getVisibleKeyNames(): readonly string[] {
-  return VISIBLE_NATURAL_NOTE_NAMES;
+export function normalizePianoOctaves(octaveCount = DEFAULT_PIANO_OCTAVES): number {
+  if (!Number.isFinite(octaveCount)) {
+    return DEFAULT_PIANO_OCTAVES;
+  }
+
+  return Math.min(
+    MAX_PIANO_OCTAVES,
+    Math.max(MIN_PIANO_OCTAVES, Math.round(octaveCount))
+  );
 }
 
-export function getVisibleBlackKeys(): Array<{ label: string; sourceIndex: number }> {
-  return SHARP_CAPABLE_NATURAL_INDEXES.map((sourceIndex) => ({
+export function getNaturalKeyCount(octaveCount = DEFAULT_PIANO_OCTAVES): number {
+  return normalizePianoOctaves(octaveCount) * NATURAL_OCTAVE.length + 1;
+}
+
+export function getVisibleKeyNames(octaveCount = DEFAULT_PIANO_OCTAVES): readonly string[] {
+  const octaves = normalizePianoOctaves(octaveCount);
+  if (octaves === DEFAULT_PIANO_OCTAVES) {
+    return VISIBLE_NATURAL_NOTE_NAMES;
+  }
+
+  return [...Array.from({ length: octaves }, () => NATURAL_OCTAVE).flat(), "C"];
+}
+
+export function getVisibleBlackKeys(
+  octaveCount = DEFAULT_PIANO_OCTAVES
+): Array<{ label: string; sourceIndex: number }> {
+  const octaves = normalizePianoOctaves(octaveCount);
+  const sharpIndexes =
+    octaves === DEFAULT_PIANO_OCTAVES
+      ? SHARP_CAPABLE_NATURAL_INDEXES
+      : Array.from({ length: octaves }, (_, octave) =>
+          SHARP_CAPABLE_OFFSETS.map((offset) => offset + octave * NATURAL_OCTAVE.length)
+        ).flat();
+
+  return sharpIndexes.map((sourceIndex) => ({
     label:
-      NOTE_NAMES_SHARPS[((NATURAL_NOTE_TO_SEMITONE[sourceIndex] ?? 0) + 1) % 12] ?? "C#",
+      NOTE_NAMES_SHARPS[(naturalZoneToSemitone(sourceIndex, false, octaves) + 1) % 12] ?? "C#",
     sourceIndex
   }));
 }
 
 export function getVisibleBlackKeyLayouts(
-  noteCount = VISIBLE_NATURAL_NOTE_NAMES.length
+  noteCount: number | undefined = undefined,
+  octaveCount = DEFAULT_PIANO_OCTAVES
 ): Array<{ label: string; sourceIndex: number; centerX: number; widthRatio: number }> {
-  const whiteKeyWidth = 1 / noteCount;
-  return getVisibleBlackKeys().map((key) => ({
+  const octaves = normalizePianoOctaves(octaveCount);
+  const resolvedNoteCount = noteCount ?? getNaturalKeyCount(octaves);
+  const whiteKeyWidth = 1 / resolvedNoteCount;
+  return getVisibleBlackKeys(octaves).map((key) => ({
     ...key,
     centerX: (key.sourceIndex + 1) * whiteKeyWidth,
     widthRatio: whiteKeyWidth * PIANO_BLACK_KEY_WIDTH_RATIO
   }));
 }
 
-export function naturalZoneSupportsSharp(zone: number): boolean {
-  return SHARP_CAPABLE_NATURAL_INDEXES.includes(zone as (typeof SHARP_CAPABLE_NATURAL_INDEXES)[number]);
+export function naturalZoneSupportsSharp(
+  zone: number,
+  octaveCount = DEFAULT_PIANO_OCTAVES
+): boolean {
+  if (!Number.isFinite(zone) || zone < 0) {
+    return false;
+  }
+
+  const normalizedZone = Math.floor(zone);
+  const octaves = normalizePianoOctaves(octaveCount);
+  if (normalizedZone >= octaves * NATURAL_OCTAVE.length) {
+    return false;
+  }
+
+  return SHARP_CAPABLE_OFFSETS.includes(
+    (normalizedZone % NATURAL_OCTAVE.length) as (typeof SHARP_CAPABLE_OFFSETS)[number]
+  );
 }
 
-export function naturalZoneToSemitone(zone: number, useSharp = false): number {
-  const semitone = NATURAL_NOTE_TO_SEMITONE[zone] ?? NATURAL_NOTE_TO_SEMITONE[0];
-  return useSharp && naturalZoneSupportsSharp(zone) ? semitone + 1 : semitone;
+export function naturalZoneToSemitone(
+  zone: number,
+  useSharp = false,
+  octaveCount = DEFAULT_PIANO_OCTAVES
+): number {
+  if (!Number.isFinite(zone) || zone < 0) {
+    return NATURAL_NOTE_TO_SEMITONE[0];
+  }
+
+  const normalizedZone = Math.min(Math.floor(zone), getNaturalKeyCount(octaveCount) - 1);
+  const octave = Math.floor(normalizedZone / NATURAL_OCTAVE.length);
+  const naturalOffset = normalizedZone % NATURAL_OCTAVE.length;
+  const semitone = (NATURAL_OCTAVE_SEMITONES[naturalOffset] ?? 0) + octave * 12;
+
+  return useSharp && naturalZoneSupportsSharp(normalizedZone, octaveCount) ? semitone + 1 : semitone;
 }
 
 export function describeRootSemitone(semitone: number, style: NoteLabelStyle): string {

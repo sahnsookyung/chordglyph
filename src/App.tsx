@@ -11,6 +11,7 @@ import {
 } from "./lib/pianoLayout";
 import { getStripBounds } from "./lib/noteMapping";
 import { getCalibrationAcceptedControlZones } from "./lib/playingFeelCalibration";
+import { MAX_PIANO_OCTAVES, MIN_PIANO_OCTAVES } from "./lib/constants";
 import type {
   CalibrationScope,
   FingerActivationTuning,
@@ -392,17 +393,23 @@ export default function App() {
   ]);
 
   const noteNames = useMemo(
-    () => getVisibleKeyNames(),
-    []
+    () => getVisibleKeyNames(state.settings.pianoOctaves),
+    [state.settings.pianoOctaves]
   );
   const pianoLayout = useMemo(
     () =>
       getPianoLayout(
         noteNames.length,
         state.settings.pianoVerticalOffset,
-        state.settings.pianoHeightScale
+        state.settings.pianoHeightScale,
+        state.settings.pianoOctaves
       ),
-    [noteNames.length, state.settings.pianoHeightScale, state.settings.pianoVerticalOffset]
+    [
+      noteNames.length,
+      state.settings.pianoHeightScale,
+      state.settings.pianoOctaves,
+      state.settings.pianoVerticalOffset
+    ]
   );
   const whiteHitSegments = useMemo(
     () => getWhiteHitSegments(pianoLayout, noteNames.length),
@@ -1152,6 +1159,15 @@ export default function App() {
             help={`${state.settings.pianoWidthScale.toFixed(3)}x wider piano means thicker keys and wider hit boxes.`}
           />
           <RangeNumberControl
+            label="Octaves"
+            min={MIN_PIANO_OCTAVES}
+            max={MAX_PIANO_OCTAVES}
+            step={1}
+            value={state.settings.pianoOctaves}
+            onChange={(value) => updateSettings({ pianoOctaves: Math.round(value) })}
+            help={`${state.settings.pianoOctaves} octave${state.settings.pianoOctaves === 1 ? "" : "s"} displayed from C to C.`}
+          />
+          <RangeNumberControl
             label="Piano opacity"
             min={0.2}
             max={1}
@@ -1536,7 +1552,7 @@ export default function App() {
                         className="black-hitbox"
                         style={{
                           left: `${key.centerX * 100}%`,
-                          width: blackKeyWidth,
+                          width: `${(key.rightX - key.leftX) * 100}%`,
                           top: blackKeyTop,
                           height: blackKeyHeight
                         }}
@@ -1566,7 +1582,7 @@ export default function App() {
                   const isActive = state.activeSharpZones.includes(key.sourceIndex);
                   return (
                     <div
-                      key={key.label}
+                      key={`${key.label}-${key.sourceIndex}`}
                       className={isActive ? "black-key active" : "black-key"}
                       style={{ left: `${key.centerX * 100}%`, width: blackKeyWidth }}
                     >

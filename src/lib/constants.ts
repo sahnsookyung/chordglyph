@@ -38,21 +38,25 @@ export const NOTE_NAMES_FLATS = [
   "C"
 ] as const;
 
-const NATURAL_OCTAVE = ["C", "D", "E", "F", "G", "A", "B"] as const;
-const NATURAL_OCTAVE_SEMITONES = [0, 2, 4, 5, 7, 9, 11] as const;
-const SHARP_CAPABLE_OFFSETS = [0, 1, 3, 4, 5] as const;
+export const MIN_PIANO_OCTAVES = 1;
+export const MAX_PIANO_OCTAVES = 6;
+export const DEFAULT_PIANO_OCTAVES = 4;
+
+export const NATURAL_OCTAVE = ["C", "D", "E", "F", "G", "A", "B"] as const;
+export const NATURAL_OCTAVE_SEMITONES = [0, 2, 4, 5, 7, 9, 11] as const;
+export const SHARP_CAPABLE_OFFSETS = [0, 1, 3, 4, 5] as const;
 
 export const VISIBLE_NATURAL_NOTE_NAMES = [
-  ...Array.from({ length: 4 }, () => NATURAL_OCTAVE).flat(),
+  ...Array.from({ length: DEFAULT_PIANO_OCTAVES }, () => NATURAL_OCTAVE).flat(),
   "C"
 ] as const;
 export const NATURAL_NOTE_TO_SEMITONE = [
-  ...Array.from({ length: 4 }, (_, octave) =>
+  ...Array.from({ length: DEFAULT_PIANO_OCTAVES }, (_, octave) =>
     NATURAL_OCTAVE_SEMITONES.map((semitone) => semitone + octave * 12)
   ).flat(),
-  48
+  DEFAULT_PIANO_OCTAVES * 12
 ] as const;
-export const SHARP_CAPABLE_NATURAL_INDEXES = Array.from({ length: 4 }, (_, octave) =>
+export const SHARP_CAPABLE_NATURAL_INDEXES = Array.from({ length: DEFAULT_PIANO_OCTAVES }, (_, octave) =>
   SHARP_CAPABLE_OFFSETS.map((offset) => offset + octave * 7)
 ).flat() as number[];
 
@@ -77,6 +81,7 @@ export const DEFAULT_SETTINGS: InstrumentSettings = {
   pianoVerticalOffset: 0,
   pianoHeightScale: 1.15,
   pianoWidthScale: 1,
+  pianoOctaves: DEFAULT_PIANO_OCTAVES,
   pianoOpacity: 0.8,
   showHitBoxes: false,
   hitBoxColor: "#f97316",
