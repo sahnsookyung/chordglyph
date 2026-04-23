@@ -84,6 +84,11 @@ import type { AudioEngine } from "../lib/audioEngine";
 type TrackerStatus = "idle" | "loading" | "ready" | "error";
 
 const MANUAL_TOUCH_SAMPLE_MAX_AGE_MS = 450;
+const RENDER_FRAME_INTERVAL_MS = 50;
+const TRACKING_DROP_LOG_INTERVAL_MS = 1000;
+const SETTINGS_SAVE_DEBOUNCE_MS = 350;
+type FingerSampleFreshnessMap = Record<FingertipName, boolean>;
+type HandedFingerSampleFreshness = Record<Handedness, FingerSampleFreshnessMap>;
 
 interface NoteCursorPoint {
   x: number;
@@ -110,6 +115,7 @@ interface InstrumentDebugState {
   touchTips: number;
   activeSemitone: number | null;
   fingerDepthSamples: HandedFingerDepthSamples;
+  fingerDepthSamplesFresh: HandedFingerSampleFreshness;
 }
 
 interface ActiveTouchMarker {
@@ -232,7 +238,7 @@ function downloadJsonFile(filename: string, content: string): void {
 
 function appendLog(logger: SessionLogger, event: SessionLogEvent): number {
   logger.push(event);
-  return logger.all().length;
+  return logger.length();
 }
 
 function toDebugHandInfo(hand: TrackedHand | null): DebugHandInfo | null {
@@ -256,6 +262,65 @@ function restorePreCalibrationFields(
     ...current,
     touchCalibration: snapshot.touchCalibration,
     activationTuning: snapshot.activationTuning
+  };
+}
+
+function emptyFingerSampleFreshness(): FingerSampleFreshnessMap {
+  return {
+    thumb: false,
+    index: false,
+    middle: false,
+    ring: false,
+    pinky: false
+  };
+}
+
+function emptyHandedFingerSampleFreshness(): HandedFingerSampleFreshness {
+  return {
+    Left: emptyFingerSampleFreshness(),
+    Right: emptyFingerSampleFreshness()
+  };
+}
+
+function getFingerSampleFreshness(
+  timestamps: HandedFingerDepthSamples,
+  timestamp: number
+): HandedFingerSampleFreshness {
+  return {
+    Left: {
+      thumb:
+        timestamps.Left.thumb !== null &&
+        timestamp - timestamps.Left.thumb <= MANUAL_TOUCH_SAMPLE_MAX_AGE_MS,
+      index:
+        timestamps.Left.index !== null &&
+        timestamp - timestamps.Left.index <= MANUAL_TOUCH_SAMPLE_MAX_AGE_MS,
+      middle:
+        timestamps.Left.middle !== null &&
+        timestamp - timestamps.Left.middle <= MANUAL_TOUCH_SAMPLE_MAX_AGE_MS,
+      ring:
+        timestamps.Left.ring !== null &&
+        timestamp - timestamps.Left.ring <= MANUAL_TOUCH_SAMPLE_MAX_AGE_MS,
+      pinky:
+        timestamps.Left.pinky !== null &&
+        timestamp - timestamps.Left.pinky <= MANUAL_TOUCH_SAMPLE_MAX_AGE_MS
+    },
+    Right: {
+      thumb:
+        timestamps.Right.thumb !== null &&
+        timestamp - timestamps.Right.thumb <= MANUAL_TOUCH_SAMPLE_MAX_AGE_MS,
+      index:
+        timestamps.Right.index !== null &&
+        timestamp - timestamps.Right.index <= MANUAL_TOUCH_SAMPLE_MAX_AGE_MS,
+      middle:
+        timestamps.Right.middle !== null &&
+        timestamp - timestamps.Right.middle <= MANUAL_TOUCH_SAMPLE_MAX_AGE_MS,
+      ring:
+        timestamps.Right.ring !== null &&
+        timestamp - timestamps.Right.ring <= MANUAL_TOUCH_SAMPLE_MAX_AGE_MS,
+      pinky:
+        timestamps.Right.pinky !== null &&
+        timestamp - timestamps.Right.pinky <= MANUAL_TOUCH_SAMPLE_MAX_AGE_MS
+    }
   };
 }
 
@@ -301,6 +366,7 @@ export function useGestureInstrument(): {
   const streamRef = useRef<MediaStream | null>(null);
   const audioRef = useRef<AudioEngine | null>(null);
   const loggerRef = useRef(new SessionLogger());
+  const logCountRef = useRef(0);
   const interactionRef = useRef(initialInteractionState);
   const smoothedNoteXRef = useRef<number | null>(null);
   const noteTraceRef = useRef<NoteCursorPoint[]>([]);
@@ -327,6 +393,18 @@ export function useGestureInstrument(): {
   const settingsHydratedRef = useRef(false);
   const armedRef = useRef(false);
   const audioOutputRequestIdRef = useRef(0);
+  const lastRenderStateAtRef = useRef(0);
+  const lastRenderSignatureRef = useRef("");
+  const lastMidiSignatureRef = useRef<string | null>(null);
+  const lastCalibrationPreviewMidiSignatureRef = useRef<string | null>(null);
+  const lastLoggedSemitoneSignatureRef = useRef("");
+  const lastTrackingDropLogAtRef = useRef(-Infinity);
+  const settingsSaveTimeoutRef = useRef<number | null>(null);
+  const frameGeometryRef = useRef<{
+    key: string;
+    pianoLayout: PianoLayout;
+    stripBounds: ReturnType<typeof getStripBounds>;
+  } | null>(null);
   const trackerStatusRef = useRef<TrackerStatus>("idle");
   const previousDeviceIdRef = useRef(DEFAULT_SETTINGS.deviceId);
   const previousTrackerBackendRef = useRef(DEFAULT_SETTINGS.trackingBackend);
@@ -374,7 +452,8 @@ export function useGestureInstrument(): {
       activeNotes: [],
       touchTips: 0,
       activeSemitone: null,
-      fingerDepthSamples: emptyHandedFingerDepthSamples()
+      fingerDepthSamples: emptyHandedFingerDepthSamples(),
+      fingerDepthSamplesFresh: emptyHandedFingerSampleFreshness()
     },
     activeNaturalZones: [],
     activeSharpZones: [],
@@ -454,11 +533,26 @@ export function useGestureInstrument(): {
       return;
     }
 
+    if (settingsSaveTimeoutRef.current !== null) {
+      window.clearTimeout(settingsSaveTimeoutRef.current);
+      settingsSaveTimeoutRef.current = null;
+    }
+
     if (calibrationSessionRef.current.active) {
       return;
     }
 
-    void saveInstrumentSettings(settings).catch(() => undefined);
+    settingsSaveTimeoutRef.current = window.setTimeout(() => {
+      settingsSaveTimeoutRef.current = null;
+      void saveInstrumentSettings(settingsRef.current).catch(() => undefined);
+    }, SETTINGS_SAVE_DEBOUNCE_MS);
+
+    return () => {
+      if (settingsSaveTimeoutRef.current !== null) {
+        window.clearTimeout(settingsSaveTimeoutRef.current);
+        settingsSaveTimeoutRef.current = null;
+      }
+    };
   }, [settings]);
 
   useEffect(() => {
@@ -503,6 +597,8 @@ export function useGestureInstrument(): {
     }
 
     audioRef.current?.setPatch(settings.synthPatch);
+    lastMidiSignatureRef.current = null;
+    lastCalibrationPreviewMidiSignatureRef.current = null;
     audioRef.current?.setVolume(settings.volume);
     if (previousAudioOutputDeviceIdRef.current === settings.audioOutputDeviceId) {
       return;
@@ -513,6 +609,9 @@ export function useGestureInstrument(): {
 
   useEffect(
     () => () => {
+      if (settingsSaveTimeoutRef.current !== null) {
+        window.clearTimeout(settingsSaveTimeoutRef.current);
+      }
       trackerRef.current?.stop(streamRef.current);
       audioRef.current?.dispose();
     },
@@ -520,30 +619,31 @@ export function useGestureInstrument(): {
   );
 
   const applyCalibrationCommit = useCallback((commit: CalibrationCommit) => {
-    setSettings((current) => {
-      const next = {
-        ...current,
-        touchCalibration: {
-          ...current.touchCalibration,
-          [commit.hand]: {
-            ...current.touchCalibration[commit.hand],
-            [commit.finger]: commit.calibration
-          }
-        },
-        activationTuning: {
-          ...current.activationTuning,
-          [commit.hand]: {
-            ...current.activationTuning[commit.hand],
-            [commit.finger]: {
-              ...current.activationTuning[commit.hand][commit.finger],
-              ...commit.tuning
-            }
+    const current = settingsRef.current;
+    const next = {
+      ...current,
+      touchCalibration: {
+        ...current.touchCalibration,
+        [commit.hand]: {
+          ...current.touchCalibration[commit.hand],
+          [commit.finger]: commit.calibration
+        }
+      },
+      activationTuning: {
+        ...current.activationTuning,
+        [commit.hand]: {
+          ...current.activationTuning[commit.hand],
+          [commit.finger]: {
+            ...current.activationTuning[commit.hand][commit.finger],
+            ...commit.tuning
           }
         }
-      };
-      settingsRef.current = next;
-      return next;
-    });
+      }
+    };
+
+    settingsRef.current = next;
+    setSettings(next);
+    return next;
   }, []);
 
   const commitFrame = useCallback(
@@ -575,12 +675,26 @@ export function useGestureInstrument(): {
       const smoothedNoteX =
         noteX === null ? null : ema(smoothedNoteXRef.current, noteX, overlayAlpha);
       smoothedNoteXRef.current = smoothedNoteX;
-      const pianoLayout = getPianoLayout(
-        undefined,
+      const geometryKey = [
+        liveSettings.noteStripSize,
+        liveSettings.pianoWidthScale,
         liveSettings.pianoVerticalOffset,
         liveSettings.pianoHeightScale
-      );
-      const stripBounds = getStripBounds(liveSettings.noteStripSize, liveSettings.pianoWidthScale);
+      ].join("|");
+      let frameGeometry = frameGeometryRef.current;
+      if (!frameGeometry || frameGeometry.key !== geometryKey) {
+        frameGeometry = {
+          key: geometryKey,
+          pianoLayout: getPianoLayout(
+            undefined,
+            liveSettings.pianoVerticalOffset,
+            liveSettings.pianoHeightScale
+          ),
+          stripBounds: getStripBounds(liveSettings.noteStripSize, liveSettings.pianoWidthScale)
+        };
+        frameGeometryRef.current = frameGeometry;
+      }
+      const { pianoLayout, stripBounds } = frameGeometry;
       const calibrationSession = calibrationSessionRef.current;
       const calibrationActive = calibrationSession.active;
       const targetHand =
@@ -689,10 +803,16 @@ export function useGestureInstrument(): {
       if (calibrationPhaseChanged) {
         audioRef.current?.syncMidiNotes([]);
         audioRef.current?.stopCalibrationPreview();
+        lastMidiSignatureRef.current = "";
+        lastCalibrationPreviewMidiSignatureRef.current = "";
         lastCalibrationPhaseRef.current = calibrationUpdate.session.phase;
       }
       if (!calibrationUpdate.session.active && calibrationUpdate.session.phase === "complete") {
         preCalibrationSettingsRef.current = null;
+        if (settingsSaveTimeoutRef.current !== null) {
+          window.clearTimeout(settingsSaveTimeoutRef.current);
+          settingsSaveTimeoutRef.current = null;
+        }
         void saveInstrumentSettings(settingsRef.current).catch(() => undefined);
       }
       if (calibrationUpdate.cue && liveSettings.calibrationAudioMode !== "off") {
@@ -921,16 +1041,27 @@ export function useGestureInstrument(): {
       const displayedActiveSharpZones = suppressNormalAudio ? [] : activeSharpZones;
       const displayedActiveSemitones = suppressNormalAudio ? [] : activeSemitones;
       const displayedActiveNoteLabels = suppressNormalAudio ? [] : activeNoteLabels;
-
-      audioRef.current?.syncMidiNotes(suppressNormalAudio ? [] : activeMidiNotes);
-      if (
+      const normalMidiSignature = suppressNormalAudio ? "" : activeMidiNotes.join(",");
+      const calibrationPreviewMidiSignature =
         calibrationUpdate.session.active &&
         calibrationUpdate.session.phase === "preview" &&
         liveSettings.calibrationAudioMode === "target-preview"
+          ? activeMidiNotes.join(",")
+          : "";
+
+      if (lastMidiSignatureRef.current !== normalMidiSignature) {
+        audioRef.current?.syncMidiNotes(suppressNormalAudio ? [] : activeMidiNotes);
+        lastMidiSignatureRef.current = normalMidiSignature;
+      }
+      if (
+        calibrationPreviewMidiSignature &&
+        lastCalibrationPreviewMidiSignatureRef.current !== calibrationPreviewMidiSignature
       ) {
         audioRef.current?.syncCalibrationPreviewNotes(activeMidiNotes, 0.24);
-      } else {
+        lastCalibrationPreviewMidiSignatureRef.current = calibrationPreviewMidiSignature;
+      } else if (!calibrationPreviewMidiSignature && lastCalibrationPreviewMidiSignatureRef.current) {
         audioRef.current?.stopCalibrationPreview();
+        lastCalibrationPreviewMidiSignatureRef.current = "";
       }
 
       const previous = interactionRef.current;
@@ -959,7 +1090,7 @@ export function useGestureInstrument(): {
       };
       interactionRef.current = nextInteraction;
 
-      let logCount = renderState.logCount;
+      let logCount = logCountRef.current;
       if (nextInteraction.currentZone !== previous.currentZone && nextInteraction.currentZone !== null) {
         logCount = appendLog(loggerRef.current, {
           type: "note-zone",
@@ -968,21 +1099,28 @@ export function useGestureInstrument(): {
         });
       }
 
-      if (displayedActiveSemitones.join(",") !== [previous.currentRoot].filter(Boolean).join(",")) {
+      const displayedSemitoneSignature = displayedActiveSemitones.join(",");
+      if (displayedSemitoneSignature !== lastLoggedSemitoneSignatureRef.current) {
         logCount = appendLog(loggerRef.current, {
           type: "audio-event",
           timestamp: frame.timestamp,
           payload: { activeSemitones: displayedActiveSemitones }
         });
+        lastLoggedSemitoneSignatureRef.current = displayedSemitoneSignature;
       }
 
-      if (trackedHands.length === 0) {
+      if (
+        trackedHands.length === 0 &&
+        frame.timestamp - lastTrackingDropLogAtRef.current >= TRACKING_DROP_LOG_INTERVAL_MS
+      ) {
         logCount = appendLog(loggerRef.current, {
           type: "tracking-drop",
           timestamp: frame.timestamp,
           payload: { reason: "no-hands-visible" }
         });
+        lastTrackingDropLogAtRef.current = frame.timestamp;
       }
+      logCountRef.current = logCount;
 
       const currentRootLabel =
         displayedActiveSemitones.length > 0
@@ -992,13 +1130,17 @@ export function useGestureInstrument(): {
             : null;
       const currentChordLabel =
         displayedActiveNoteLabels.length > 0 ? displayedActiveNoteLabels.join(" • ") : "Waiting for touch";
-      const focusTouchMarker =
-        activeTouchMarkers
-          .sort(
-            (left, right) =>
-              Number(right.isPressed) - Number(left.isPressed) ||
-              right.depthScore - left.depthScore
-          )[0] ?? null;
+      let focusTouchMarker: ActiveTouchMarker | null = null;
+      for (const marker of activeTouchMarkers) {
+        if (
+          !focusTouchMarker ||
+          Number(marker.isPressed) > Number(focusTouchMarker.isPressed) ||
+          (marker.isPressed === focusTouchMarker.isPressed &&
+            marker.depthScore > focusTouchMarker.depthScore)
+        ) {
+          focusTouchMarker = marker;
+        }
+      }
       const focusHand = focusTouchMarker
         ? trackedHands.find((hand) => hand.id === focusTouchMarker.handId) ?? null
         : primaryHand;
@@ -1022,6 +1164,32 @@ export function useGestureInstrument(): {
               liveSettings.pianoWidthScale
             )
           : null;
+      let touchTips = directBlackTouches.size;
+      groupedWhiteTouches.forEach((count) => {
+        touchTips += count;
+      });
+      const renderSignature = [
+        displayedSemitoneSignature,
+        trackedHands.length,
+        calibrationUpdate.session.phase,
+        calibrationUpdate.session.targetHand,
+        calibrationUpdate.session.targetFinger,
+        calibrationUpdate.session.guidance,
+        Math.round(calibrationUpdate.session.progress * 20),
+        logCount,
+        startupNotice ?? "",
+        audioOutputNotice ?? ""
+      ].join("|");
+      const shouldPublishRender =
+        renderSignature !== lastRenderSignatureRef.current ||
+        frame.timestamp - lastRenderStateAtRef.current >= RENDER_FRAME_INTERVAL_MS;
+
+      if (!shouldPublishRender) {
+        return;
+      }
+
+      lastRenderSignatureRef.current = renderSignature;
+      lastRenderStateAtRef.current = frame.timestamp;
 
       setRenderState({
         trackerStatus: "ready",
@@ -1055,11 +1223,13 @@ export function useGestureInstrument(): {
           touchDepth: latestTouchDepthRef.current,
           depthGate: liveSettings.depthGate,
           activeNotes: displayedActiveNoteLabels,
-          touchTips:
-            [...groupedWhiteTouches.values()].reduce((sum, count) => sum + count, 0) +
-            directBlackTouches.size,
+          touchTips,
           activeSemitone: displayedActiveSemitones[0] ?? null,
-          fingerDepthSamples: latestFingerDepthSamplesRef.current
+          fingerDepthSamples: latestFingerDepthSamplesRef.current,
+          fingerDepthSamplesFresh: getFingerSampleFreshness(
+            latestFingerDepthSampleTimestampsRef.current,
+            frame.timestamp
+          )
         },
         activeNaturalZones: displayedActiveNaturalZones,
         activeSharpZones: displayedActiveSharpZones,
@@ -1067,7 +1237,7 @@ export function useGestureInstrument(): {
         calibrationSession: calibrationUpdate.session
       });
     },
-    [applyCalibrationCommit, armed, audioOutputDevices, audioOutputNotice, devices, renderState.logCount, startupNotice]
+    [applyCalibrationCommit, armed, audioOutputDevices, audioOutputNotice, devices, startupNotice]
   );
 
   useEffect(() => {
@@ -1089,6 +1259,8 @@ export function useGestureInstrument(): {
         latestFingerDepthSamplesRef.current = emptyHandedFingerDepthSamples();
         latestWeightedFingerDepthSamplesRef.current = emptyHandedFingerDepthSamples();
         latestFingerDepthSampleTimestampsRef.current = emptyHandedFingerDepthSamples();
+        lastRenderStateAtRef.current = 0;
+        lastRenderSignatureRef.current = "";
         trackerRef.current = await createTrackerBackend(backendKind);
         await trackerRef.current.initialize();
         streamRef.current = await trackerRef.current.attachCamera(videoRef.current, deviceId);
@@ -1156,6 +1328,8 @@ export function useGestureInstrument(): {
     trackerRef.current?.stop(streamRef.current);
     streamRef.current = null;
     audioRef.current?.stopAll();
+    lastMidiSignatureRef.current = null;
+    lastCalibrationPreviewMidiSignatureRef.current = null;
     interactionRef.current = initialInteractionState;
     noteTraceRef.current = [];
     smoothedNoteXRef.current = null;
@@ -1164,6 +1338,8 @@ export function useGestureInstrument(): {
     latestFingerDepthSamplesRef.current = emptyHandedFingerDepthSamples();
     latestWeightedFingerDepthSamplesRef.current = emptyHandedFingerDepthSamples();
     latestFingerDepthSampleTimestampsRef.current = emptyHandedFingerDepthSamples();
+    lastRenderStateAtRef.current = 0;
+    lastRenderSignatureRef.current = "";
     tipIntentMemoryRef.current = {};
     calibrationSessionRef.current = createIdleCalibrationSession();
     preCalibrationSettingsRef.current = null;
@@ -1192,7 +1368,8 @@ export function useGestureInstrument(): {
         activeNotes: [],
         touchTips: 0,
         activeSemitone: null,
-        fingerDepthSamples: emptyHandedFingerDepthSamples()
+        fingerDepthSamples: emptyHandedFingerDepthSamples(),
+        fingerDepthSamplesFresh: emptyHandedFingerSampleFreshness()
       },
       activeNaturalZones: [],
       activeSharpZones: [],
@@ -1281,6 +1458,8 @@ export function useGestureInstrument(): {
     if (armedRef.current && audioRef.current) {
       if (patch.synthPatch !== undefined) {
         audioRef.current.setPatch(next.synthPatch);
+        lastMidiSignatureRef.current = null;
+        lastCalibrationPreviewMidiSignatureRef.current = null;
       }
       if (patch.volume !== undefined) {
         audioRef.current.setVolume(next.volume);
@@ -1424,11 +1603,17 @@ export function useGestureInstrument(): {
       calibrationSessionRef.current = result.session;
       audioRef.current?.syncMidiNotes([]);
       audioRef.current?.stopCalibrationPreview();
+      lastMidiSignatureRef.current = "";
+      lastCalibrationPreviewMidiSignatureRef.current = "";
       if (result.cue && settingsRef.current.calibrationAudioMode !== "off") {
         audioRef.current?.triggerCalibrationCue(result.cue);
       }
       if (!result.session.active && result.session.phase === "complete") {
         preCalibrationSettingsRef.current = null;
+        if (settingsSaveTimeoutRef.current !== null) {
+          window.clearTimeout(settingsSaveTimeoutRef.current);
+          settingsSaveTimeoutRef.current = null;
+        }
         void saveInstrumentSettings(settingsRef.current).catch(() => undefined);
       }
 
@@ -1446,12 +1631,18 @@ export function useGestureInstrument(): {
 
   const startPlayingFeelCalibrationFlow = useCallback(
     (scope: CalibrationScope) => {
+      if (settingsSaveTimeoutRef.current !== null) {
+        window.clearTimeout(settingsSaveTimeoutRef.current);
+        settingsSaveTimeoutRef.current = null;
+      }
       preCalibrationSettingsRef.current = settingsRef.current;
       const nextSession = startPlayingFeelCalibration(scope, performance.now());
       calibrationSessionRef.current = nextSession;
       lastCalibrationPhaseRef.current = nextSession.phase;
       audioRef.current?.syncMidiNotes([]);
       audioRef.current?.stopCalibrationPreview();
+      lastMidiSignatureRef.current = "";
+      lastCalibrationPreviewMidiSignatureRef.current = "";
       void startTracking();
       void armAudio();
       setRenderState((current) => ({
@@ -1496,6 +1687,8 @@ export function useGestureInstrument(): {
     preCalibrationSettingsRef.current = null;
     audioRef.current?.syncMidiNotes([]);
     audioRef.current?.stopCalibrationPreview();
+    lastMidiSignatureRef.current = "";
+    lastCalibrationPreviewMidiSignatureRef.current = "";
     if (restoredSettings) {
       settingsRef.current = restoredSettings;
       setSettings(restoredSettings);

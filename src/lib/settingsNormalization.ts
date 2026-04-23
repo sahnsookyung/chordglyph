@@ -372,6 +372,7 @@ export function normalizeInstrumentSettings(value: unknown): InstrumentSettings 
     pianoOpacity: asFiniteNumber(persisted.pianoOpacity, DEFAULT_SETTINGS.pianoOpacity),
     showHitBoxes: asBoolean(persisted.showHitBoxes, DEFAULT_SETTINGS.showHitBoxes),
     hitBoxColor: asString(persisted.hitBoxColor, DEFAULT_SETTINGS.hitBoxColor),
+    lowLatencyMode: asBoolean(persisted.lowLatencyMode, DEFAULT_SETTINGS.lowLatencyMode),
     volume: asFiniteNumber(persisted.volume, DEFAULT_SETTINGS.volume),
     synthPatch: asOneOf<SynthPatch>(
       persisted.synthPatch,

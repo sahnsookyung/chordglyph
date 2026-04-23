@@ -127,6 +127,7 @@ export interface InstrumentSettings {
   pianoOpacity: number;
   showHitBoxes: boolean;
   hitBoxColor: string;
+  lowLatencyMode: boolean;
   volume: number;
   synthPatch: SynthPatch;
   showDebugOverlays: boolean;

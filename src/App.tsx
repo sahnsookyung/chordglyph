@@ -107,7 +107,8 @@ function drawHandPath(
     isPressed: boolean;
   }>,
   idleTipColor: string,
-  activeColor: string
+  activeColor: string,
+  showLabels: boolean
 ): void {
   context.strokeStyle = stroke;
   context.lineWidth = 1 + thickness * 2.2;
@@ -146,6 +147,10 @@ function drawHandPath(
     context.arc(landmark.x * width, landmark.y * height, radius, 0, Math.PI * 2);
     context.fill();
   });
+
+  if (!showLabels) {
+    return;
+  }
 
   context.textBaseline = "middle";
   context.lineJoin = "round";
@@ -321,14 +326,31 @@ export default function App() {
       return;
     }
 
-    canvas.width = stageSize.width;
-    canvas.height = stageSize.height;
+    const pixelRatio = window.devicePixelRatio || 1;
+    const nextWidth = Math.max(1, Math.round(stageSize.width * pixelRatio));
+    const nextHeight = Math.max(1, Math.round(stageSize.height * pixelRatio));
+    if (canvas.width !== nextWidth || canvas.height !== nextHeight) {
+      canvas.width = nextWidth;
+      canvas.height = nextHeight;
+    }
+  }, [stageSize]);
+
+  useEffect(() => {
+    const canvas = overlayRef.current;
+    if (!canvas) {
+      return;
+    }
+
     const context = canvas.getContext("2d");
     if (!context) {
       return;
     }
 
+    const width = Math.max(1, stageSize.width);
+    const height = Math.max(1, stageSize.height);
+    context.setTransform(1, 0, 0, 1, 0, 0);
     context.clearRect(0, 0, canvas.width, canvas.height);
+    context.setTransform(canvas.width / width, 0, 0, canvas.height / height, 0, 0);
     context.strokeStyle = "rgba(255,255,255,0.2)";
     context.fillStyle = "rgba(255,255,255,0.18)";
 
@@ -336,7 +358,7 @@ export default function App() {
       const alpha = (index + 1) / state.noteTrace.length;
       context.fillStyle = `rgba(125, 211, 252, ${alpha * 0.65})`;
       context.beginPath();
-      context.arc(point.x * canvas.width, point.y * canvas.height, 3 + alpha * 4, 0, Math.PI * 2);
+      context.arc(point.x * width, point.y * height, 3 + alpha * 4, 0, Math.PI * 2);
       context.fill();
     });
 
@@ -347,13 +369,14 @@ export default function App() {
       drawHandPath(
         context,
         hand.landmarks,
-        canvas.width,
-        canvas.height,
+        width,
+        height,
         stroke,
         state.settings.overlayThickness,
         activeTouchMarkers,
         role === "note" ? "#7dd3fc" : role === "chord" ? "#fb923c" : "#e2e8f0",
-        state.settings.hitBoxColor
+        state.settings.hitBoxColor,
+        !state.settings.lowLatencyMode
       );
     });
   }, [
@@ -363,6 +386,7 @@ export default function App() {
     state.noteTrace,
     state.overlayHands,
     state.settings.hitBoxColor,
+    state.settings.lowLatencyMode,
     state.settings.overlayThickness
   ]);
 
@@ -398,7 +422,7 @@ export default function App() {
   const guidedCalibrationFinger =
     guidedCalibrationIndex === null ? null : FINGERTIP_SENSITIVITY_CONTROLS[guidedCalibrationIndex] ?? null;
   const hasFingerDepthSamples = FINGERTIP_SENSITIVITY_CONTROLS.some(
-    ({ key }) => state.debug.fingerDepthSamples[calibrationHand][key] !== null
+    ({ key }) => state.debug.fingerDepthSamplesFresh[calibrationHand][key]
   );
   const calibrationControlZone = state.calibrationSession.active
     ? getCalibrationControlZone(state.calibrationSession.controlHand)
@@ -484,7 +508,7 @@ export default function App() {
   }, [state.trackerStatus]);
 
   return (
-    <div className="app-shell">
+    <div className={state.settings.lowLatencyMode ? "app-shell low-latency" : "app-shell"}>
       <header className="app-topbar">
         <div className="brand-block topbar-brand">
           <p className="eyebrow">Gesture Instrument v1</p>
@@ -608,7 +632,7 @@ export default function App() {
                           : current + 1
                       );
                     }}
-                    disabled={state.debug.fingerDepthSamples[calibrationHand][guidedCalibrationFinger.key] === null}
+                    disabled={!state.debug.fingerDepthSamplesFresh[calibrationHand][guidedCalibrationFinger.key]}
                   >
                     {guidedActivationPhase === "hover" ? "Set Hover" : "Set Press"}
                   </button>
@@ -785,7 +809,7 @@ export default function App() {
                 {FINGERTIP_SENSITIVITY_CONTROLS.map(({ key, label }) => {
                   const calibration = state.settings.touchCalibration[calibrationHand][key];
                   const hasSample =
-                    state.debug.fingerDepthSamples[calibrationHand][key] !== null;
+                    state.debug.fingerDepthSamplesFresh[calibrationHand][key];
                   return (
                     <div key={key} className="finger-sensitivity-control">
                       <RangeNumberControl
@@ -1158,6 +1182,14 @@ export default function App() {
             />
             <span>Show hit boxes</span>
           </label>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={state.settings.lowLatencyMode}
+              onChange={(event) => updateSettings({ lowLatencyMode: event.target.checked })}
+            />
+            <span>Low latency visuals</span>
+          </label>
         </section>
 
         <section className="panel-card">
@@ -1272,6 +1304,7 @@ export default function App() {
                   <strong>{formatDebugValue(state.debug.fingerDepthSamples[calibrationHand][key], 3)}</strong>
                   <small className="settings-help">
                     {state.settings.fingerDepthSensitivity[calibrationHand][key].toFixed(2)}x sensitivity
+                    {state.debug.fingerDepthSamplesFresh[calibrationHand][key] ? " · live" : " · no live sample"}
                   </small>
                 </div>
               ))}

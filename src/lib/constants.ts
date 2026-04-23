@@ -80,6 +80,7 @@ export const DEFAULT_SETTINGS: InstrumentSettings = {
   pianoOpacity: 0.8,
   showHitBoxes: false,
   hitBoxColor: "#f97316",
+  lowLatencyMode: false,
   volume: -10,
   synthPatch: "soft-keys",
   showDebugOverlays: true,
