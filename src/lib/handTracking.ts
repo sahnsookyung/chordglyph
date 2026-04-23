@@ -22,6 +22,21 @@ type VideoElementWithFrameCallback = HTMLVideoElement & {
   cancelVideoFrameCallback?: (handle: VideoFrameCallbackHandle) => void;
 };
 
+type WorkerRequest =
+  | { kind: "init"; requestId: number }
+  | { kind: "detect"; requestId: number; frame: ImageBitmap; timestamp: number };
+
+type WorkerResponse =
+  | { kind: "ready"; requestId: number }
+  | {
+      kind: "result";
+      requestId: number;
+      hands: TrackedHand[];
+      timestamp: number;
+      latencyMs: number;
+    }
+  | { kind: "error"; requestId: number; message: string };
+
 function toTrackedHands(result: HandLandmarkerResult): TrackedHand[] {
   return result.landmarks.map((landmarks, index) => {
     const handedness = normalizeHandedness(result.handednesses[index]?.[0]?.categoryName);
@@ -142,5 +157,258 @@ export class MediaPipeHandTrackerBackend implements HandTrackerBackend {
     this.videoFrameCallbackId = 0;
     this.activeVideo = null;
     stream?.getTracks().forEach((track) => track.stop());
+  }
+}
+
+export class MediaPipeWorkerHandTrackerBackend implements HandTrackerBackend {
+  readonly kind = "mediapipe-hands" as const;
+  private worker: Worker | null = null;
+  private rafId = 0;
+  private videoFrameCallbackId = 0;
+  private activeVideo: VideoElementWithFrameCallback | null = null;
+  private requestId = 0;
+  private inFlight = false;
+  private stopped = false;
+  private lastVideoTime = -1;
+  private lastFrameTimestamp = performance.now();
+  private lastProcessedAt = 0;
+  private pendingInit:
+    | { requestId: number; resolve: () => void; reject: (error: Error) => void }
+    | null = null;
+  private pendingFrameStartedAt = 0;
+  private onFrame: ((frame: TrackerFrame) => void) | null = null;
+
+  async initialize(): Promise<void> {
+    if (this.worker) {
+      return;
+    }
+
+    if (typeof Worker === "undefined" || typeof createImageBitmap === "undefined") {
+      throw new Error("Worker hand tracking is not supported in this browser.");
+    }
+
+    this.worker = new Worker(new URL("./handTrackingWorker.ts", import.meta.url), {
+      type: "module"
+    });
+    this.worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
+      this.handleWorkerMessage(event.data);
+    };
+    this.worker.onerror = (event) => {
+      const error = new Error(event.message || "Worker hand tracker failed to load.");
+      if (this.pendingInit) {
+        this.pendingInit.reject(error);
+        this.pendingInit = null;
+      }
+    };
+
+    return await new Promise<void>((resolve, reject) => {
+      const requestId = this.nextRequestId();
+      const timeoutId = window.setTimeout(() => {
+        if (this.pendingInit?.requestId === requestId) {
+          this.pendingInit.reject(new Error("Worker hand tracker initialization timed out."));
+          this.pendingInit = null;
+        }
+      }, 10000);
+      this.pendingInit = {
+        requestId,
+        resolve: () => {
+          window.clearTimeout(timeoutId);
+          resolve();
+        },
+        reject: (error) => {
+          window.clearTimeout(timeoutId);
+          reject(error);
+        }
+      };
+      this.worker?.postMessage({ kind: "init", requestId } satisfies WorkerRequest);
+    });
+  }
+
+  async attachCamera(video: HTMLVideoElement, deviceId: string): Promise<MediaStream> {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        frameRate: { ideal: 30, min: 24 },
+        ...(deviceId ? { deviceId: { exact: deviceId } } : {})
+      }
+    });
+
+    video.srcObject = stream;
+    await video.play();
+    return stream;
+  }
+
+  start(video: HTMLVideoElement, onFrame: (frame: TrackerFrame) => void): void {
+    if (!this.worker) {
+      throw new Error("Worker hand tracker has not been initialized");
+    }
+
+    const videoWithFrameCallback = video as VideoElementWithFrameCallback;
+    this.activeVideo = videoWithFrameCallback;
+    this.onFrame = onFrame;
+    this.stopped = false;
+
+    const scheduleDetect = () => {
+      void this.detectNextFrame(video);
+    };
+
+    if (videoWithFrameCallback.requestVideoFrameCallback) {
+      const loop = () => {
+        if (this.stopped) {
+          return;
+        }
+        scheduleDetect();
+        if (!this.stopped) {
+          this.videoFrameCallbackId = videoWithFrameCallback.requestVideoFrameCallback?.(loop) ?? 0;
+        }
+      };
+
+      this.videoFrameCallbackId = videoWithFrameCallback.requestVideoFrameCallback(loop);
+      return;
+    }
+
+    const loop = () => {
+      if (this.stopped) {
+        return;
+      }
+      scheduleDetect();
+      if (!this.stopped) {
+        this.rafId = requestAnimationFrame(loop);
+      }
+    };
+
+    this.rafId = requestAnimationFrame(loop);
+  }
+
+  stop(stream: MediaStream | null): void {
+    this.stopped = true;
+    cancelAnimationFrame(this.rafId);
+    this.activeVideo?.cancelVideoFrameCallback?.(this.videoFrameCallbackId);
+    this.videoFrameCallbackId = 0;
+    this.activeVideo = null;
+    this.onFrame = null;
+    this.worker?.terminate();
+    this.worker = null;
+    this.pendingInit = null;
+    this.inFlight = false;
+    stream?.getTracks().forEach((track) => track.stop());
+  }
+
+  private async detectNextFrame(video: HTMLVideoElement): Promise<void> {
+    const worker = this.worker;
+    const now = performance.now();
+    if (
+      !worker ||
+      this.stopped ||
+      this.inFlight ||
+      video.readyState < 2 ||
+      video.currentTime === this.lastVideoTime ||
+      now - this.lastProcessedAt < TARGET_FRAME_INTERVAL_MS
+    ) {
+      return;
+    }
+
+    this.inFlight = true;
+    this.lastVideoTime = video.currentTime;
+    this.lastProcessedAt = now;
+    const requestId = this.nextRequestId();
+
+    try {
+      const frame = await createImageBitmap(video);
+      if (this.stopped || this.worker !== worker) {
+        frame.close();
+        this.inFlight = false;
+        return;
+      }
+
+      this.pendingFrameStartedAt = performance.now();
+      worker.postMessage(
+        {
+          kind: "detect",
+          requestId,
+          frame,
+          timestamp: now
+        } satisfies WorkerRequest,
+        [frame]
+      );
+    } catch {
+      this.inFlight = false;
+    }
+  }
+
+  private handleWorkerMessage(message: WorkerResponse): void {
+    if (message.kind === "ready") {
+      if (this.pendingInit?.requestId === message.requestId) {
+        this.pendingInit.resolve();
+        this.pendingInit = null;
+      }
+      return;
+    }
+
+    if (message.kind === "error") {
+      this.inFlight = false;
+      if (this.pendingInit?.requestId === message.requestId) {
+        this.pendingInit.reject(new Error(message.message));
+        this.pendingInit = null;
+      }
+      return;
+    }
+
+    this.inFlight = false;
+    const now = performance.now();
+    const fps = 1000 / Math.max(now - this.lastFrameTimestamp, 1);
+    this.lastFrameTimestamp = now;
+    this.onFrame?.({
+      hands: message.hands,
+      timestamp: now,
+      fps,
+      latencyMs: Math.max(now - this.pendingFrameStartedAt, message.latencyMs)
+    });
+  }
+
+  private nextRequestId(): number {
+    this.requestId += 1;
+    return this.requestId;
+  }
+}
+
+export class AutoMediaPipeHandTrackerBackend implements HandTrackerBackend {
+  readonly kind = "mediapipe-hands" as const;
+  private delegate: HandTrackerBackend | null = null;
+
+  async initialize(): Promise<void> {
+    const workerBackend = new MediaPipeWorkerHandTrackerBackend();
+    try {
+      await workerBackend.initialize();
+      this.delegate = workerBackend;
+      return;
+    } catch {
+      workerBackend.stop(null);
+    }
+
+    const mainThreadBackend = new MediaPipeHandTrackerBackend();
+    await mainThreadBackend.initialize();
+    this.delegate = mainThreadBackend;
+  }
+
+  async attachCamera(video: HTMLVideoElement, deviceId: string): Promise<MediaStream> {
+    return await this.requireDelegate().attachCamera(video, deviceId);
+  }
+
+  start(video: HTMLVideoElement, onFrame: (frame: TrackerFrame) => void): void {
+    this.requireDelegate().start(video, onFrame);
+  }
+
+  stop(stream: MediaStream | null): void {
+    this.delegate?.stop(stream);
+  }
+
+  private requireDelegate(): HandTrackerBackend {
+    if (!this.delegate) {
+      throw new Error("Hand tracker has not been initialized");
+    }
+    return this.delegate;
   }
 }

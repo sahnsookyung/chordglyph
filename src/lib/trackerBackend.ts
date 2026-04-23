@@ -13,8 +13,8 @@ export async function createTrackerBackend(
 ): Promise<HandTrackerBackend> {
   switch (kind) {
     case "mediapipe-hands": {
-      const { MediaPipeHandTrackerBackend } = await import("./handTracking");
-      return new MediaPipeHandTrackerBackend();
+      const { AutoMediaPipeHandTrackerBackend } = await import("./handTracking");
+      return new AutoMediaPipeHandTrackerBackend();
     }
     case "yolo-pose":
       throw new Error("YOLO Pose backend adapter has not been implemented yet.");
