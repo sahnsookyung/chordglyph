@@ -13,6 +13,10 @@ export interface StableTrackedHand {
   stableHandedness: Handedness;
 }
 
+const RAW_HANDEDNESS_BONUS = 0.35;
+const SCREEN_SIDE_BIAS_WEIGHT = 1.25;
+const SLOT_CONTINUITY_WEIGHT = 1.5;
+
 export function emptyStableHandSlots(): StableHandSlots {
   return {
     Left: { avgX: null },
@@ -26,9 +30,10 @@ function scoreHandForSide(
   previousSlot: StableHandSlot
 ): number {
   const avgX = averageHandX(hand);
-  const rawHandednessBonus = hand.handedness === side ? 1.2 : 0;
+  const rawHandednessBonus = hand.handedness === side ? RAW_HANDEDNESS_BONUS : 0;
   // In the mirrored preview, the player's physical right hand still appears
-  // on the right side of the screen from their perspective.
+  // on the right side of the screen from their perspective. Screen side should
+  // beat raw model labels when the two disagree.
   const sideBias =
     side === "Left"
       ? clamp((0.5 - avgX) / 0.5, -1, 1)
@@ -38,7 +43,11 @@ function scoreHandForSide(
       ? 0
       : 1 - clamp(Math.abs(avgX - previousSlot.avgX) / 0.35, 0, 1);
 
-  return rawHandednessBonus + sideBias * 0.85 + continuityBonus * 1.5;
+  return (
+    rawHandednessBonus +
+    sideBias * SCREEN_SIDE_BIAS_WEIGHT +
+    continuityBonus * SLOT_CONTINUITY_WEIGHT
+  );
 }
 
 export function resolveStableHandedness(

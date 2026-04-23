@@ -48,4 +48,18 @@ describe("resolveStableHandedness", () => {
 
     expect(result.resolvedHands[0]?.stableHandedness).toBe("Right");
   });
+
+  it("lets mirrored screen side beat a conflicting raw model label", () => {
+    const rightSideResult = resolveStableHandedness(
+      [makeHand("right-side", "Left", 0.82)],
+      emptyStableHandSlots()
+    );
+    const leftSideResult = resolveStableHandedness(
+      [makeHand("left-side", "Right", 0.18)],
+      emptyStableHandSlots()
+    );
+
+    expect(rightSideResult.resolvedHands[0]?.stableHandedness).toBe("Right");
+    expect(leftSideResult.resolvedHands[0]?.stableHandedness).toBe("Left");
+  });
 });
