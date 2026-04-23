@@ -43,7 +43,7 @@ button {
 .app-shell {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 10px;
   min-height: 100vh;
   padding: var(--shell-padding);
 }
@@ -74,18 +74,18 @@ button {
 
 .app-topbar {
   position: relative;
-  display: grid;
-  grid-template-columns: minmax(160px, 0.42fr) minmax(0, 2fr);
-  gap: 12px;
+  display: flex;
+  gap: 10px;
   align-items: center;
-  padding: 10px 12px;
-  border-radius: 20px;
+  justify-content: space-between;
+  padding: 6px 8px 6px 12px;
+  border-radius: 16px;
   border: 1px solid rgba(255, 255, 255, 0.09);
   background:
     linear-gradient(135deg, rgba(7, 18, 24, 0.9), rgba(13, 29, 37, 0.78)),
     rgba(7, 18, 24, 0.74);
-  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.18);
-  backdrop-filter: blur(14px);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.16);
+  backdrop-filter: blur(10px);
 }
 
 .brand-block h1,
@@ -95,10 +95,14 @@ button {
 }
 
 .brand-block {
-  padding: 8px 4px;
+  padding: 0;
 }
 
 .topbar-brand {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: max-content;
   padding: 0;
 }
 
@@ -117,35 +121,38 @@ button {
 }
 
 .topbar-brand h1 {
-  font-size: clamp(1.25rem, 1.6vw, 1.8rem);
+  font-size: clamp(1rem, 1.25vw, 1.28rem);
 }
 
-.lede {
-  max-width: 36ch;
-  margin: 12px 0 0;
-  color: rgba(246, 247, 239, 0.76);
-}
-
-.topbar-brand .lede {
-  display: none;
+.topbar-subtitle {
+  margin: 0;
+  color: rgba(246, 247, 239, 0.58);
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .topbar-actions {
-  display: grid;
-  grid-template-columns: minmax(360px, 1fr) minmax(300px, 0.85fr);
-  gap: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
   align-items: center;
+  min-width: 0;
 }
 
 .topbar-buttons {
-  align-content: start;
+  align-content: center;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
 }
 
 .topbar-scope-select {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 0.44rem 0.5rem 0.44rem 0.85rem;
+  gap: 6px;
+  padding: 0.32rem 0.38rem 0.32rem 0.66rem;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.055);
 }
@@ -160,13 +167,27 @@ button {
   border-radius: 999px;
   color: #f6f7ef;
   background: rgba(255, 255, 255, 0.08);
-  padding: 0.32rem 0.55rem;
+  padding: 0.24rem 0.42rem;
 }
 
 .topbar-buttons .primary-button,
 .topbar-buttons .secondary-button,
 .topbar-buttons .ghost-button {
-  padding: 0.56rem 0.82rem;
+  padding: 0.43rem 0.68rem;
+}
+
+.topbar-live-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0.38rem 0.64rem;
+  border-radius: 999px;
+  color: #bbf7d0;
+  background: rgba(34, 197, 94, 0.13);
+  border: 1px solid rgba(74, 222, 128, 0.22);
+  font-size: 0.78rem;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .panel-card,
@@ -248,33 +269,11 @@ button {
   margin-top: 14px;
 }
 
-.status-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  margin-top: 14px;
-}
-
-.topbar-status {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-  margin-top: 0;
-}
-
-.topbar-status > div {
-  min-width: 0;
-  padding: 7px 9px;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.045);
-}
-
 .topbar-actions .warning-text,
 .topbar-actions .error-text {
-  grid-column: 1 / -1;
   margin-top: 0;
 }
 
-.status-grid span,
 .settings-grid span,
 .metric-pill span,
 .confidence-card span,
@@ -284,7 +283,6 @@ button {
   color: rgba(246, 247, 239, 0.6);
 }
 
-.status-grid strong,
 .metric-pill strong,
 .hud-chip strong,
 .legend-header strong {
@@ -952,15 +950,12 @@ button {
 
   .app-topbar {
     position: static;
-    grid-template-columns: 1fr;
+    align-items: flex-start;
+    flex-wrap: wrap;
   }
 
   .topbar-actions {
-    grid-template-columns: 1fr;
-  }
-
-  .topbar-status {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    justify-content: flex-start;
   }
 
   .control-panel,
@@ -985,12 +980,16 @@ button {
   }
 
   .app-topbar {
-    padding: 12px;
-    border-radius: 20px;
+    padding: 8px;
+    border-radius: 16px;
   }
 
-  .topbar-status {
-    grid-template-columns: 1fr;
+  .topbar-brand {
+    width: 100%;
+  }
+
+  .topbar-buttons {
+    justify-content: flex-start;
   }
 
   .settings-grid {
@@ -999,10 +998,6 @@ button {
 
   .stage {
     min-height: 340px;
-  }
-
-  .status-grid {
-    grid-template-columns: 1fr;
   }
 
   .range-number-row {

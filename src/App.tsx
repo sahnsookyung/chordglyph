@@ -278,7 +278,6 @@ export default function App() {
   const {
     videoRef,
     state,
-    armAudio,
     calibrateFingerSensitivity,
     calibrateSingleFingerSensitivity,
     calibrateDepthGate,
@@ -512,22 +511,19 @@ export default function App() {
     <div className={state.settings.lowLatencyMode ? "app-shell low-latency" : "app-shell"}>
       <header className="app-topbar">
         <div className="brand-block topbar-brand">
-          <p className="eyebrow">Gesture Instrument v1</p>
           <h1>ChordGlyph</h1>
-          <p className="lede">
-            A fingertip-played webcam piano with a live keyboard overlay, four octaves of notes,
-            and tunable depth-gated touch detection.
-          </p>
+          <p className="topbar-subtitle">Fingertip piano</p>
         </div>
 
         <div className="topbar-actions">
           <div className="button-row topbar-buttons">
-            <button className="primary-button" onClick={() => void startTracking()}>
-              {state.trackerStatus === "ready" ? "Camera Live" : "Enable Camera"}
-            </button>
-            <button className="secondary-button" onClick={() => void armAudio()}>
-              {state.armed ? "Audio Armed" : "Arm Audio"}
-            </button>
+            {state.trackerStatus === "ready" ? (
+              <span className="topbar-live-pill">Camera live</span>
+            ) : (
+              <button className="primary-button" onClick={() => void startTracking()}>
+                Enable Camera
+              </button>
+            )}
             <button className="ghost-button" onClick={stopTracking}>
               Stop
             </button>
@@ -545,34 +541,16 @@ export default function App() {
             </label>
             {state.calibrationSession.active ? (
               <button className="ghost-button" onClick={cancelPlayingFeelCalibrationFlow}>
-                Cancel Calibration
+                Cancel
               </button>
             ) : (
               <button
                 className="secondary-button"
                 onClick={() => startPlayingFeelCalibration(calibrationScope)}
               >
-                Calibrate Playing Feel
+                Calibrate Feel
               </button>
             )}
-          </div>
-          <div className="status-grid topbar-status">
-            <div>
-              <span>System</span>
-              <strong>{state.interaction.systemState}</strong>
-            </div>
-            <div>
-              <span>Root</span>
-              <strong>{state.currentRootLabel ?? "Waiting"}</strong>
-            </div>
-            <div>
-              <span>Mode</span>
-              <strong>{state.currentModeLabel}</strong>
-            </div>
-            <div>
-              <span>Pipeline</span>
-              <strong>{Math.round(state.latencyMs)} ms</strong>
-            </div>
           </div>
           {state.error ? <p className="error-text">{state.error}</p> : null}
           {state.warnings[0] ? <p className="warning-text">{state.warnings[0]}</p> : null}
