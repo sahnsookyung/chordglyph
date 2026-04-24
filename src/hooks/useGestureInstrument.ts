@@ -93,6 +93,9 @@ import type {
 import type { AudioEngine } from "../lib/audioEngine";
 
 type TrackerStatus = "idle" | "loading" | "ready" | "error";
+type WindowWithWebkitAudioContext = Window & {
+  webkitAudioContext?: typeof AudioContext;
+};
 
 const MANUAL_TOUCH_SAMPLE_MAX_AGE_MS = 450;
 const RENDER_FRAME_INTERVAL_MS = 50;
@@ -182,6 +185,27 @@ const FINGER_NAME_TO_TIP_INDEX: Record<FingertipName, 4 | 8 | 12 | 16 | 20> = {
   ring: 16,
   pinky: 20
 };
+
+function getAudioContextConstructor(): typeof AudioContext | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  return window.AudioContext ?? (window as WindowWithWebkitAudioContext).webkitAudioContext ?? null;
+}
+
+function primeAudioContext(context: AudioContext): void {
+  try {
+    const gain = context.createGain();
+    gain.gain.value = 0;
+    const oscillator = context.createOscillator();
+    oscillator.connect(gain).connect(context.destination);
+    oscillator.start();
+    oscillator.stop(context.currentTime + 0.01);
+  } catch {
+    // Some browsers reject silent unlock nodes; resume() is still the important gesture-bound call.
+  }
+}
 
 function keyToMidiNote(candidateKey: string | null, octaveCount: number): number | null {
   if (!candidateKey) {
@@ -419,6 +443,7 @@ export function useGestureInstrument(): {
   const settingsHydratedRef = useRef(false);
   const armedRef = useRef(false);
   const audioArmingRef = useRef(false);
+  const unlockedAudioContextRef = useRef<AudioContext | null>(null);
   const audioOutputRequestIdRef = useRef(0);
   const lastRenderStateAtRef = useRef(0);
   const lastRenderSignatureRef = useRef("");
@@ -1594,16 +1619,31 @@ export function useGestureInstrument(): {
     setRenderState((current) => ({ ...current, audioStatus: "arming" }));
 
     try {
+      let unlockedAudioContext = unlockedAudioContextRef.current;
+      if (!unlockedAudioContext) {
+        const AudioContextConstructor = getAudioContextConstructor();
+        unlockedAudioContext = AudioContextConstructor ? new AudioContextConstructor() : null;
+        unlockedAudioContextRef.current = unlockedAudioContext;
+      }
+      const unlockPromise = unlockedAudioContext?.state === "suspended"
+        ? unlockedAudioContext.resume()
+        : Promise.resolve();
+      if (unlockedAudioContext) {
+        primeAudioContext(unlockedAudioContext);
+      }
+
       if (!audioRef.current) {
         const { AudioEngine: RuntimeAudioEngine } = await import("../lib/audioEngine");
         audioRef.current = new RuntimeAudioEngine();
       }
 
+      await unlockPromise;
       const liveSettings = settingsRef.current;
       const routed = await audioRef.current.start(
         liveSettings.synthPatch,
         liveSettings.volume,
-        liveSettings.audioOutputDeviceId
+        liveSettings.audioOutputDeviceId,
+        unlockedAudioContext
       );
       armedRef.current = true;
       setArmed(true);
@@ -1622,11 +1662,9 @@ export function useGestureInstrument(): {
         startupNotice: null,
         audioOutputNotice: notice
       }));
-    } catch (caughtError) {
+    } catch {
       const nextAudioStatus: AudioStatus =
-        caughtError instanceof Error && /import|module|routing|output/i.test(caughtError.message)
-          ? "error"
-          : "blocked";
+        unlockedAudioContextRef.current === null ? "error" : "blocked";
       setAudioStatus(nextAudioStatus);
       const notice =
         nextAudioStatus === "blocked"
@@ -1650,8 +1688,7 @@ export function useGestureInstrument(): {
 
     startupAttemptedRef.current = true;
     void startTracking();
-    void armAudio();
-  }, [armAudio, settingsReady, startTracking]);
+  }, [settingsReady, startTracking]);
 
   useEffect(() => {
     if (armed) {
@@ -1663,12 +1700,12 @@ export function useGestureInstrument(): {
       void armAudio();
     };
 
-    window.addEventListener("pointerdown", retryAudio, { once: true });
-    window.addEventListener("keydown", retryAudio, { once: true });
+    window.addEventListener("pointerdown", retryAudio, { capture: true });
+    window.addEventListener("keydown", retryAudio, { capture: true });
 
     return () => {
-      window.removeEventListener("pointerdown", retryAudio);
-      window.removeEventListener("keydown", retryAudio);
+      window.removeEventListener("pointerdown", retryAudio, { capture: true });
+      window.removeEventListener("keydown", retryAudio, { capture: true });
     };
   }, [armed, armAudio, audioStatus]);
 

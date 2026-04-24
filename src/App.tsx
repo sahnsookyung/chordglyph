@@ -73,7 +73,7 @@ function audioStatusLabel(status: "idle" | "arming" | "armed" | "blocked" | "err
     case "error":
       return "Audio retry";
     default:
-      return "Audio idle";
+      return "Click to enable audio";
   }
 }
 
