@@ -172,6 +172,29 @@ describe("playing feel calibration", () => {
     expect(acceptedTap.commit?.tuning.releaseVelocityThreshold).toBeGreaterThan(0);
   });
 
+  it("counts natural partial lifts as tap cycle releases", () => {
+    let session = {
+      ...startPlayingFeelCalibration("Left", 0),
+      phase: "capture-hover" as const
+    };
+
+    for (let index = 0; index < 26; index += 1) {
+      session = update(session, index * 34, sample(index * 34, 0.01 + (index % 2) * 0.0001));
+    }
+
+    session = acceptPlayingFeelCalibration(session, 1000).session;
+    const partialLiftDepths = [
+      0.01, 0.014, 0.022, 0.026, 0.018,
+      0.019, 0.024, 0.028, 0.019
+    ];
+    partialLiftDepths.forEach((depth, index) => {
+      session = update(session, 1100 + index * 70, sample(1100 + index * 70, depth));
+    });
+
+    expect(session.phase).toBe("confirm-taps");
+    expect(session.captureStatus).toContain("taps");
+  });
+
   it("lets users advance immediately from the finger summary", () => {
     const summary = captureFingerSummarySession();
 

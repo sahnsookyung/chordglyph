@@ -136,6 +136,7 @@ export interface PlayingFeelCalibrationSession {
   progress: number;
   qualityScore: number | null;
   guidance: string;
+  captureStatus: string;
   targetKey: string | null;
   previewMidiNote: number | null;
   previewStartedAt: number | null;
@@ -226,6 +227,7 @@ export function createIdleCalibrationSession(timestamp = 0): PlayingFeelCalibrat
     progress: 0,
     qualityScore: null,
     guidance: "Ready to calibrate.",
+    captureStatus: "Idle.",
     targetKey: null,
     previewMidiNote: null,
     previewStartedAt: null,
@@ -255,6 +257,7 @@ export function startPlayingFeelCalibration(
     controlHand: getOppositeHand(targetHand),
     targetFinger: CALIBRATION_FINGER_ORDER[0],
     guidance: `Show the control gestures with your ${getOppositeHand(targetHand).toLowerCase()} hand.`,
+    captureStatus: "Learn fist, pinch, and open-palm control signs.",
     phaseStartedAt: timestamp
   };
 }
@@ -394,6 +397,67 @@ function getTapExcursionThreshold(hover: CalibrationHoverResult): number {
   return Math.max(0.0012, hover.noiseFloor * 2.5);
 }
 
+function formatSeconds(ms: number): string {
+  return `${Math.max(0, Math.ceil(ms / 1000))}s`;
+}
+
+function buildHoverCaptureStatus(
+  samples: CalibrationFrameSample[],
+  hover: CalibrationHoverResult | null,
+  targetSample: CalibrationFrameSample | null
+): string {
+  if (hover) {
+    return `${hover.sampleCount} stable frames on ${hover.targetKey}; xy ${hover.xyStdDev.toFixed(3)}, z noise ${hover.noiseFloor.toFixed(4)}.`;
+  }
+
+  if (!targetSample) {
+    return "Waiting for the target fingertip.";
+  }
+
+  if (!targetSample.visible) {
+    return "Move the fingertip into the keyboard band.";
+  }
+
+  const usableSamples = samples.filter(
+    (sample) => sample.visible && getSampleResolvedKey(sample) !== null
+  );
+  if (usableSamples.length === 0) {
+    return "Move over a white or black key.";
+  }
+
+  const first = usableSamples[0];
+  const last = usableSamples[usableSamples.length - 1];
+  const elapsedMs = last.timestamp - first.timestamp;
+  return `${usableSamples.length}/${CALIBRATION_STABILITY_THRESHOLDS.hoverMinFrames} frames, ${formatSeconds(elapsedMs)}/${formatSeconds(CALIBRATION_STABILITY_THRESHOLDS.hoverMinDurationMs)} steady hold.`;
+}
+
+function buildTapCaptureStatus(
+  cycles: number,
+  hover: CalibrationHoverResult | null,
+  targetSample: CalibrationFrameSample | null,
+  timestamp: number,
+  phaseStartedAt: number
+): string {
+  const remainingMs =
+    CALIBRATION_STABILITY_THRESHOLDS.tapTimeoutMs - (timestamp - phaseStartedAt);
+  if (!hover) {
+    return "Waiting for accepted hover.";
+  }
+
+  if (!targetSample) {
+    return `${cycles}/${CALIBRATION_STABILITY_THRESHOLDS.tapMinCycles} taps; return the target fingertip to ${hover.targetKey}.`;
+  }
+
+  if (getSampleResolvedKey(targetSample) !== hover.targetKey) {
+    return `${cycles}/${CALIBRATION_STABILITY_THRESHOLDS.tapMinCycles} taps; stay on ${hover.targetKey}.`;
+  }
+
+  const excursion = Math.abs(targetSample.weightedDepth - hover.weightedDepth);
+  const threshold = getTapExcursionThreshold(hover);
+  const cue = excursion < threshold ? "press a little farther" : "lift and press again";
+  return `${cycles}/${CALIBRATION_STABILITY_THRESHOLDS.tapMinCycles} taps, ${formatSeconds(remainingMs)} left; ${cue}.`;
+}
+
 function scoreToLabel(score: number): CalibrationQualityLabel {
   if (score >= CALIBRATION_QUALITY_THRESHOLDS.good) {
     return "Good";
@@ -486,7 +550,7 @@ function detectTapCycles(
   const negativePeak = Math.min(...deltas);
   const direction: -1 | 1 = positivePeak >= Math.abs(negativePeak) ? 1 : -1;
   const threshold = getTapExcursionThreshold(hover);
-  const releaseThreshold = threshold * 0.35;
+  const releaseThreshold = threshold * 0.6;
   const cycles: Array<{ peak: CalibrationFrameSample; peakDelta: number; startIndex: number; endIndex: number }> = [];
   let pressing = false;
   let peak: CalibrationFrameSample | null = null;
@@ -508,7 +572,8 @@ function detectTapCycles(
       peakDelta = excursion;
     }
 
-    if (pressing && excursion <= releaseThreshold && peak) {
+    const dynamicReleaseThreshold = Math.max(releaseThreshold, peakDelta * 0.62);
+    if (pressing && excursion <= dynamicReleaseThreshold && peak) {
       cycles.push({ peak, peakDelta, startIndex, endIndex: index });
       pressing = false;
       peak = null;
@@ -526,7 +591,7 @@ function summarizeTapSamples(
   const validSamples = samples.filter(
     (sample) => sample.visible && getSampleResolvedKey(sample) === hover.targetKey
   );
-  if (validSamples.length < 12) {
+  if (validSamples.length < 8) {
     return null;
   }
 
@@ -674,6 +739,7 @@ function resetForCapture(
     progress: 0,
     qualityScore: null,
     guidance,
+    captureStatus: phase === "capture-taps" ? "Ready for two natural taps." : "Collecting hover samples.",
     previewMidiNote: null,
     command: emptyCommandState()
   };
@@ -827,6 +893,7 @@ function advanceToNextFinger(
     phaseStartedAt: timestamp,
     previewStartedAt: timestamp,
     guidance: "Preview your calibrated feel. Use fist or Space to finish, pinch or R to retry.",
+    captureStatus: "Previewing saved calibration.",
     progress: 1,
     previewMidiNote: null,
     command: emptyCommandState()
@@ -989,6 +1056,7 @@ function acceptCurrentPhase(
         phaseStartedAt: timestamp,
         progress: 1,
         guidance: `${session.targetFinger} captured: ${commit?.label ?? "Pending"}.`,
+        captureStatus: `Saved ${session.targetHand} ${session.targetFinger} on ${session.pendingTap.targetKey}.`,
         command: emptyCommandState()
       },
       commit,
@@ -1003,6 +1071,7 @@ function acceptCurrentPhase(
         active: false,
         phase: "complete",
         guidance: "Calibration complete.",
+        captureStatus: "Calibration complete.",
         command: emptyCommandState()
       },
       commit: null,
@@ -1031,6 +1100,7 @@ export function cancelPlayingFeelCalibration(
     phase: "idle",
     phaseStartedAt: timestamp,
     guidance: "Calibration cancelled.",
+    captureStatus: "Cancelled.",
     command: emptyCommandState(),
     previewMidiNote: null
   };
@@ -1216,6 +1286,7 @@ export function updatePlayingFeelCalibrationSession(
             ...session,
             rehearsal,
             guidance: "Rehearse control signs: fist accept, pinch retry, open palm pause.",
+            captureStatus: `${Object.values(rehearsal).filter(Boolean).length}/3 control signs learned.`,
             progress: Object.values(rehearsal).filter(Boolean).length / 3
           },
       commit: null,
@@ -1285,7 +1356,8 @@ export function updatePlayingFeelCalibrationSession(
         ? "Hover captured. Show fist to accept or pinch to retry."
         : input.targetSample
           ? "Hold steady over one key."
-          : "Move the target fingertip near the keyboard."
+          : "Move the target fingertip near the keyboard.",
+      captureStatus: buildHoverCaptureStatus(hoverSamples, hover, input.targetSample)
     };
 
     if (hover) {
@@ -1335,7 +1407,14 @@ export function updatePlayingFeelCalibrationSession(
         ? getTapConfirmationGuidance(tap, cycles)
         : timedOut
           ? "Tap capture timed out. Pinch or press R to retry."
-          : "Press and lift naturally twice."
+          : "Press and lift naturally twice.",
+      captureStatus: buildTapCaptureStatus(
+        cycles,
+        session.acceptedHover,
+        input.targetSample,
+        input.timestamp,
+        session.phaseStartedAt
+      )
     };
 
     if (tap) {

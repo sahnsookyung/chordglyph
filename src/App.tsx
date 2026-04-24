@@ -1683,6 +1683,10 @@ export default function App() {
                       <span>Quality</span>
                       <strong>{formatCalibrationQuality(state.calibrationSession.qualityScore)}</strong>
                     </div>
+                    <div className="calibration-progress-wide">
+                      <span>Capture</span>
+                      <strong>{state.calibrationSession.captureStatus}</strong>
+                    </div>
                     <div>
                       <span>Key</span>
                       <strong>{state.calibrationSession.targetKey ?? "--"}</strong>

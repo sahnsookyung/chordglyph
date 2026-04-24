@@ -820,6 +820,10 @@ button {
   gap: 8px;
 }
 
+.calibration-progress-wide {
+  grid-column: span 2;
+}
+
 .calibration-progress-grid div,
 .calibration-command,
 .gesture-card {
@@ -840,6 +844,7 @@ button {
   display: block;
   margin-top: 2px;
   font-size: 0.9rem;
+  overflow-wrap: anywhere;
 }
 
 .calibration-progress-bar {
