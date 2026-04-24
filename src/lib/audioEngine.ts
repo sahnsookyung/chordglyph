@@ -1,6 +1,8 @@
-import * as Tone from "tone";
+import type * as ToneTypes from "tone";
 import { buildVoicing, midiToNoteName } from "./music";
 import type { AudioEvent, SynthPatch } from "./types";
+
+type ToneModule = typeof ToneTypes;
 
 type SinkSelectableAudioElement = HTMLAudioElement & {
   setSinkId?: (sinkId: string) => Promise<void>;
@@ -32,11 +34,13 @@ const PATCHES = {
 } as const;
 
 export class AudioEngine {
-  private synth: Tone.PolySynth | null = null;
+  private tone: ToneModule | null = null;
+  private toneAudioContext: AudioContext | null = null;
+  private synth: ToneTypes.PolySynth | null = null;
   private currentNotes: string[] = [];
   private calibrationPreviewNotes: string[] = [];
   private currentPatch: SynthPatch = "soft-keys";
-  private volume: Tone.Volume | null = null;
+  private volume: ToneTypes.Volume | null = null;
   private volumeDb = -10;
   private currentOutputDeviceId = "";
   private explicitOutputElement: SinkSelectableAudioElement | null = null;
@@ -49,9 +53,7 @@ export class AudioEngine {
     outputDeviceId = "",
     unlockedContext: AudioContext | null = null
   ): Promise<boolean> {
-    if (unlockedContext) {
-      Tone.setContext(unlockedContext, true);
-    }
+    const Tone = await this.loadTone(unlockedContext);
 
     if (unlockedContext?.state === "suspended") {
       await unlockedContext.resume();
@@ -59,14 +61,14 @@ export class AudioEngine {
 
     await Tone.start();
     this.volumeDb = gainDb;
-    this.getVolume().volume.value = gainDb;
-    this.setPatch(patch);
+    this.getVolume(Tone).volume.value = gainDb;
+    this.setPatchWithTone(Tone, patch);
 
     try {
       return await this.setOutputDevice(outputDeviceId);
     } catch {
       try {
-        this.routeToDefaultOutput();
+        this.routeToDefaultOutput(Tone);
       } catch {
         // Tone is already started; report routing failure without blocking audio arming state.
       }
@@ -77,10 +79,19 @@ export class AudioEngine {
 
   setPatch(patch: SynthPatch): void {
     this.currentPatch = patch;
+    if (!this.tone) {
+      return;
+    }
+
+    this.setPatchWithTone(this.tone, patch);
+  }
+
+  private setPatchWithTone(Tone: ToneModule, patch: SynthPatch): void {
+    this.currentPatch = patch;
     this.synth?.dispose();
     this.currentNotes = [];
     this.calibrationPreviewNotes = [];
-    this.synth = new Tone.PolySynth(Tone.Synth).connect(this.getVolume());
+    this.synth = new Tone.PolySynth(Tone.Synth).connect(this.getVolume(Tone));
     this.synth.set(PATCHES[patch] as never);
   }
 
@@ -90,28 +101,34 @@ export class AudioEngine {
   }
 
   async setOutputDevice(deviceId: string): Promise<boolean> {
+    const Tone = this.tone;
+    if (!Tone) {
+      this.currentOutputDeviceId = "";
+      return false;
+    }
+
     if (!deviceId) {
-      this.routeToDefaultOutput();
+      this.routeToDefaultOutput(Tone);
       this.currentOutputDeviceId = "";
       return true;
     }
 
-    const sinkElement = this.getExplicitOutputElement();
+    const sinkElement = this.getExplicitOutputElement(Tone);
     if (!sinkElement?.setSinkId) {
-      this.routeToDefaultOutput();
+      this.routeToDefaultOutput(Tone);
       this.currentOutputDeviceId = "";
       return false;
     }
 
     try {
       await sinkElement.setSinkId(deviceId);
-      this.routeToExplicitOutput();
+      this.routeToExplicitOutput(Tone);
       await sinkElement.play();
       this.currentOutputDeviceId = deviceId;
       return true;
     } catch {
       try {
-        this.routeToDefaultOutput();
+        this.routeToDefaultOutput(Tone);
       } catch {
         // Keep startup alive even if the browser refuses to rewire output devices.
       }
@@ -125,7 +142,8 @@ export class AudioEngine {
   }
 
   handle(event: AudioEvent, legato: boolean): void {
-    if (!this.synth) {
+    const Tone = this.tone;
+    if (!Tone || !this.synth) {
       return;
     }
 
@@ -148,7 +166,8 @@ export class AudioEngine {
   }
 
   syncMidiNotes(midiNotes: number[]): void {
-    if (!this.synth) {
+    const Tone = this.tone;
+    if (!Tone || !this.synth) {
       return;
     }
 
@@ -175,7 +194,8 @@ export class AudioEngine {
   }
 
   syncCalibrationPreviewNotes(midiNotes: number[], velocity = 0.24): void {
-    if (!this.synth) {
+    const Tone = this.tone;
+    if (!Tone || !this.synth) {
       return;
     }
 
@@ -202,7 +222,8 @@ export class AudioEngine {
   }
 
   stopCalibrationPreview(): void {
-    if (this.calibrationPreviewNotes.length === 0) {
+    const Tone = this.tone;
+    if (!Tone || this.calibrationPreviewNotes.length === 0) {
       return;
     }
 
@@ -211,7 +232,8 @@ export class AudioEngine {
   }
 
   triggerCalibrationTone(midiNote: number, duration = 0.12, velocity = 0.35): void {
-    if (!this.synth) {
+    const Tone = this.tone;
+    if (!Tone || !this.synth) {
       return;
     }
 
@@ -239,7 +261,20 @@ export class AudioEngine {
     this.volume?.dispose();
   }
 
-  private getVolume(): Tone.Volume {
+  private async loadTone(unlockedContext: AudioContext | null): Promise<ToneModule> {
+    if (!this.tone) {
+      this.tone = await import("tone");
+    }
+
+    if (unlockedContext && this.toneAudioContext !== unlockedContext) {
+      this.tone.setContext(unlockedContext, true);
+      this.toneAudioContext = unlockedContext;
+    }
+
+    return this.tone;
+  }
+
+  private getVolume(Tone: ToneModule): ToneTypes.Volume {
     if (!this.volume) {
       this.volume = new Tone.Volume(this.volumeDb);
     }
@@ -247,7 +282,7 @@ export class AudioEngine {
     return this.volume;
   }
 
-  private getExplicitOutputElement(): SinkSelectableAudioElement | null {
+  private getExplicitOutputElement(Tone: ToneModule): SinkSelectableAudioElement | null {
     if (typeof document === "undefined") {
       return null;
     }
@@ -271,23 +306,23 @@ export class AudioEngine {
     return this.explicitOutputElement;
   }
 
-  private routeToDefaultOutput(): void {
+  private routeToDefaultOutput(Tone: ToneModule): void {
     this.disconnectOutputs();
     this.explicitOutputElement?.pause();
-    this.getVolume().connect(Tone.getDestination());
+    this.getVolume(Tone).connect(Tone.getDestination());
     this.explicitRoutingActive = false;
   }
 
-  private routeToExplicitOutput(): void {
-    const sinkElement = this.getExplicitOutputElement();
+  private routeToExplicitOutput(Tone: ToneModule): void {
+    const sinkElement = this.getExplicitOutputElement(Tone);
     const destination = this.explicitOutputDestination;
     if (!sinkElement || !destination) {
-      this.routeToDefaultOutput();
+      this.routeToDefaultOutput(Tone);
       return;
     }
 
     this.disconnectOutputs();
-    this.getVolume().connect(destination);
+    this.getVolume(Tone).connect(destination);
     this.explicitRoutingActive = true;
   }
 

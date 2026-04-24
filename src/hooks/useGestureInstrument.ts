@@ -207,6 +207,15 @@ function primeAudioContext(context: AudioContext): void {
   }
 }
 
+function isAutoplayBlockedError(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === "NotAllowedError") {
+    return true;
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  return /not allowed|autoplay|user gesture|interrupted|suspended/i.test(message);
+}
+
 function keyToMidiNote(candidateKey: string | null, octaveCount: number): number | null {
   if (!candidateKey) {
     return null;
@@ -1632,12 +1641,16 @@ export function useGestureInstrument(): {
         primeAudioContext(unlockedAudioContext);
       }
 
+      await unlockPromise;
+      if (unlockedAudioContext?.state === "suspended") {
+        throw new DOMException("AudioContext resume requires a user gesture.", "NotAllowedError");
+      }
+
       if (!audioRef.current) {
         const { AudioEngine: RuntimeAudioEngine } = await import("../lib/audioEngine");
         audioRef.current = new RuntimeAudioEngine();
       }
 
-      await unlockPromise;
       const liveSettings = settingsRef.current;
       const routed = await audioRef.current.start(
         liveSettings.synthPatch,
@@ -1662,9 +1675,9 @@ export function useGestureInstrument(): {
         startupNotice: null,
         audioOutputNotice: notice
       }));
-    } catch {
-      const nextAudioStatus: AudioStatus =
-        unlockedAudioContextRef.current === null ? "error" : "blocked";
+    } catch (error) {
+      console.warn("[ChordGlyph] Audio arming failed", error);
+      const nextAudioStatus: AudioStatus = isAutoplayBlockedError(error) ? "blocked" : "error";
       setAudioStatus(nextAudioStatus);
       const notice =
         nextAudioStatus === "blocked"
