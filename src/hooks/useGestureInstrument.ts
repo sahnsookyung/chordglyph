@@ -1256,14 +1256,24 @@ export function useGestureInstrument(): {
         });
       }
 
-      const displayedSemitoneSignature = displayedActiveSemitones.join(",");
-      if (displayedSemitoneSignature !== lastLoggedSemitoneSignatureRef.current) {
+      const displayedAudioSignature = [
+        liveSettings.playMode,
+        displayedActiveSemitones.join(","),
+        displayedActiveNoteLabels.join(","),
+        normalMidiSignature
+      ].join("|");
+      if (displayedAudioSignature !== lastLoggedSemitoneSignatureRef.current) {
         logCount = appendLog(loggerRef.current, {
           type: "audio-event",
           timestamp: frame.timestamp,
-          payload: { activeSemitones: displayedActiveSemitones }
+          payload: {
+            playMode: liveSettings.playMode,
+            activeSemitones: displayedActiveSemitones,
+            activeMidiNotes: suppressNormalAudio ? [] : playableMidiNotes,
+            activeLabels: displayedActiveNoteLabels
+          }
         });
-        lastLoggedSemitoneSignatureRef.current = displayedSemitoneSignature;
+        lastLoggedSemitoneSignatureRef.current = displayedAudioSignature;
       }
 
       if (
@@ -1336,7 +1346,7 @@ export function useGestureInstrument(): {
       }
       const renderSignature = [
         liveSettings.playMode,
-        displayedSemitoneSignature,
+        displayedAudioSignature,
         displayedActiveNoteLabels.join(","),
         displayedActiveCircleSegments.Left.join(","),
         displayedActiveCircleSegments.Right.join(","),
