@@ -50,7 +50,18 @@ export class AudioEngine {
     await Tone.start();
     this.volume.volume.value = gainDb;
     this.setPatch(patch);
-    return await this.setOutputDevice(outputDeviceId);
+
+    try {
+      return await this.setOutputDevice(outputDeviceId);
+    } catch {
+      try {
+        this.routeToDefaultOutput();
+      } catch {
+        // Tone is already started; report routing failure without blocking audio arming state.
+      }
+      this.currentOutputDeviceId = "";
+      return false;
+    }
   }
 
   setPatch(patch: SynthPatch): void {
@@ -87,7 +98,11 @@ export class AudioEngine {
       this.currentOutputDeviceId = deviceId;
       return true;
     } catch {
-      this.routeToDefaultOutput();
+      try {
+        this.routeToDefaultOutput();
+      } catch {
+        // Keep startup alive even if the browser refuses to rewire output devices.
+      }
       this.currentOutputDeviceId = "";
       return false;
     }

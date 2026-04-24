@@ -604,22 +604,34 @@ export function useGestureInstrument(): {
     audioOutputRequestIdRef.current = requestId;
     previousAudioOutputDeviceIdRef.current = deviceId;
 
-    void audioEngine.setOutputDevice(deviceId).then((applied) => {
-      if (audioOutputRequestIdRef.current !== requestId) {
-        return;
-      }
+    void audioEngine
+      .setOutputDevice(deviceId)
+      .then((applied) => {
+        if (audioOutputRequestIdRef.current !== requestId) {
+          return;
+        }
 
-      if (applied) {
-        setAudioOutputNotice(null);
-        setRenderState((current) => ({ ...current, audioOutputNotice: null }));
-        return;
-      }
+        if (applied) {
+          setAudioOutputNotice(null);
+          setRenderState((current) => ({ ...current, audioOutputNotice: null }));
+          return;
+        }
 
-      const notice =
-        "Explicit audio device routing is unavailable in this browser, so sound is using the system default output.";
-      setAudioOutputNotice(notice);
-      setRenderState((current) => ({ ...current, audioOutputNotice: notice }));
-    });
+        const notice =
+          "Selected audio output could not be routed directly, so sound is using the browser default output.";
+        setAudioOutputNotice(notice);
+        setRenderState((current) => ({ ...current, audioOutputNotice: notice }));
+      })
+      .catch(() => {
+        if (audioOutputRequestIdRef.current !== requestId) {
+          return;
+        }
+
+        const notice =
+          "Selected audio output could not be routed directly, so sound is using the browser default output.";
+        setAudioOutputNotice(notice);
+        setRenderState((current) => ({ ...current, audioOutputNotice: notice }));
+      });
   }, []);
 
   useEffect(() => {
@@ -1599,7 +1611,7 @@ export function useGestureInstrument(): {
       setStartupNotice(null);
       const notice =
         liveSettings.audioOutputDeviceId && !routed
-          ? "Explicit audio device routing is unavailable in this browser, so sound is using the system default output."
+          ? "Selected audio output could not be routed directly, so sound is using the browser default output."
           : null;
       previousAudioOutputDeviceIdRef.current = liveSettings.audioOutputDeviceId;
       setAudioOutputNotice(notice);
@@ -1658,7 +1670,7 @@ export function useGestureInstrument(): {
       window.removeEventListener("pointerdown", retryAudio);
       window.removeEventListener("keydown", retryAudio);
     };
-  }, [armed, armAudio]);
+  }, [armed, armAudio, audioStatus]);
 
   const updateSettings = useCallback((patch: Partial<InstrumentSettings>) => {
     const previous = settingsRef.current;
