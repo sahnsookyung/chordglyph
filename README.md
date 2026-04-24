@@ -18,6 +18,8 @@ ChordGlyph is a browser-based gesture instrument. It uses a webcam to track hand
 
 Piano mode overlays a keyboard under the hand-tracking layer. Only fingertip landmarks can press keys. Calibrated fingertips map weighted webcam depth into activation, with separate press, hard-press, release, dwell, and velocity-assist settings.
 
+![Piano mode screenshot](docs/screenshots/piano-mode.png)
+
 Useful controls:
 
 - **Piano position**, **key height**, **key width**, and **octaves** tune the visual keyboard and hit-test geometry together.
@@ -28,6 +30,8 @@ Useful controls:
 ### Circle
 
 Circle mode avoids z-depth entirely. Each hand gets a seven-segment note circle. Enabled fingertips trigger notes by 2D position, and the same hand shape selects chord quality.
+
+![Circle mode screenshot](docs/screenshots/circle-mode.png)
 
 Useful controls:
 
