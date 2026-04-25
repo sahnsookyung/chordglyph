@@ -36,11 +36,6 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          args: >
-            -Dsonar.projectKey=ChordGlyph
-            -Dsonar.organization=sahnsookyung
-            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
 
       - name: SonarQube Quality Gate
         uses: SonarSource/sonarqube-quality-gate-action@master
