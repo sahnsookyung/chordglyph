@@ -31,4 +31,6 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
           args: >
+            -Dsonar.projectKey=ChordGlyph
+            -Dsonar.organization=sahnsookyung
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
