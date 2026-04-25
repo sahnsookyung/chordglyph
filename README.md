@@ -1,5 +1,6 @@
 # ChordGlyph
 
+<!-- trigger -->
 ChordGlyph is a browser-based gesture instrument. It uses a webcam to track hands, renders playable music surfaces over the camera feed, and produces synth audio directly in the browser.
 
 ## Features
