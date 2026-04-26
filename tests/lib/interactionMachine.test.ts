@@ -72,4 +72,65 @@ describe("updateInteractionState", () => {
     expect(stable.state.stableMode).toBe("major");
     expect(timedOut.state.stableMode).toBe("single");
   });
+
+  it("requires a pinch edge in pinch trigger mode", () => {
+    const options = {
+      triggerMode: "pinch" as const,
+      dwellMs: 40,
+      cooldownMs: 0,
+      noteLossMs: 200,
+      chordLossMs: 200,
+      chordPersistenceMs: 100,
+      ambiguityTimeoutMs: 100
+    };
+    const first = updateInteractionState(initialInteractionState, frame({ timestamp: 0 }), options);
+    const hoverOnly = updateInteractionState(
+      first.state,
+      frame({ timestamp: 50, notePinch: false }),
+      options
+    );
+    const pinched = updateInteractionState(
+      hoverOnly.state,
+      frame({ timestamp: 60, notePinch: true }),
+      options
+    );
+
+    expect(hoverOnly.events).toHaveLength(0);
+    expect(pinched.events[0]).toMatchObject({ kind: "play" });
+  });
+
+  it("stops sounding after the note hand is missing long enough", () => {
+    const primed = {
+      ...initialInteractionState,
+      isSounding: true,
+      stableMode: "minor",
+      lastNoteVisibleAt: 0,
+      currentZone: 4,
+      currentRoot: 4,
+      currentRootSince: 0
+    };
+    const missing = updateInteractionState(
+      primed,
+      frame({ timestamp: 400, noteX: null, noteConfidence: 0.1, chordGesture: null, chordConfidence: 0.1 })
+    );
+
+    expect(missing.events[0]).toMatchObject({ kind: "stop", rootIndex: null, mode: "minor" });
+    expect(missing.state.systemState).toBe("DEGRADED_TRACKING");
+    expect(missing.state.currentRoot).toBeNull();
+  });
+
+  it("holds the previous mode briefly when the chord hand disappears", () => {
+    const holdingMajor = {
+      ...initialInteractionState,
+      stableMode: "major",
+      lastChordVisibleAt: 100
+    };
+    const update = updateInteractionState(
+      holdingMajor,
+      frame({ timestamp: 180, chordGesture: null, chordConfidence: 0.1 })
+    );
+
+    expect(update.state.stableMode).toBe("major");
+    expect(update.state.warnings).toContain("Chord hand lost - holding previous mode");
+  });
 });
