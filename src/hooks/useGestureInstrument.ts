@@ -4,7 +4,7 @@ import {
   useMemo,
   useRef,
   useState,
-  type MutableRefObject
+  type RefObject
 } from "react";
 import { averageHandX } from "../lib/assignment";
 import { CALIBRATION_STABILITY_THRESHOLDS, DEFAULT_SETTINGS } from "../lib/constants";
@@ -13,9 +13,11 @@ import { ema, lerp } from "../lib/geometry";
 import { initialInteractionState, type InteractionState } from "../lib/interactionMachine";
 import { SessionLogger } from "../lib/logger";
 import {
-  buildVoicing,
-  describeChord,
+  buildVoicingFromMidiRoot,
+  describeMidiChord,
+  describeMidiNote,
   describeRootSemitone,
+  getMidiForSemitoneOctave,
   getNaturalKeyCount,
   getRootMidi,
   naturalZoneToSemitone
@@ -53,8 +55,11 @@ import {
 } from "../lib/audioDevices";
 import {
   classifyCircleChordQuality,
+  getCircleOctaveShiftForPose,
   getCircleLayout,
+  getCircleRootLabel,
   getCircleRootSemitone,
+  shouldUseCircleChordVoicing,
   resolveCircleSegment
 } from "../lib/circleMode";
 import { loadInstrumentSettings, saveInstrumentSettings } from "../lib/settingsStore";
@@ -64,7 +69,6 @@ import {
   cancelPlayingFeelCalibration,
   classifyCalibrationControlGesture,
   createIdleCalibrationSession,
-  getOppositeHand,
   isPalmInsideControlZone,
   retryPlayingFeelCalibration,
   skipPlayingFeelCalibrationFinger,
@@ -72,6 +76,7 @@ import {
   updatePlayingFeelCalibrationSession,
   type CalibrationFrameSample,
   type CalibrationCommit,
+  type CalibrationUpdateResult,
   type PlayingFeelCalibrationSession
 } from "../lib/playingFeelCalibration";
 import { createTrackerBackend, listVideoDevices, type HandTrackerBackend } from "../lib/trackerBackend";
@@ -85,6 +90,7 @@ import type {
   HandedTouchDepthMap,
   Handedness,
   InstrumentSettings,
+  Landmark,
   SessionLogEvent,
   TouchCalibrationPoint,
   TrackerFrame,
@@ -103,6 +109,7 @@ const TRACKING_DROP_LOG_INTERVAL_MS = 1000;
 const SETTINGS_SAVE_DEBOUNCE_MS = 350;
 type FingerSampleFreshnessMap = Record<FingertipName, boolean>;
 type HandedFingerSampleFreshness = Record<Handedness, FingerSampleFreshnessMap>;
+type CurrentRef<T> = { current: T };
 
 interface NoteCursorPoint {
   x: number;
@@ -154,6 +161,7 @@ interface ActiveCircleMarker {
   tipIndex: (typeof PLAYABLE_FINGERTIP_INDEXES)[number];
   segment: number;
   rootSemitone: number;
+  rootMidi: number;
   chordMode: ChordMode;
   label: string;
 }
@@ -251,7 +259,7 @@ function resolvePianoKeyAt(
     layout,
     getPreviousWhiteZone(previousKey)
   );
-  return whiteZone !== null ? `white:${whiteZone}` : null;
+  return resolveCandidateKeyFromZones(null, whiteZone);
 }
 
 export interface InstrumentViewState {
@@ -401,8 +409,915 @@ function getOverlaySmoothingAlpha(sensitivity: number): number {
   return lerp(0.18, 0.62, sensitivity);
 }
 
+function getStableHand(
+  handedness: Handedness,
+  stableLeftHand: TrackedHand | null,
+  stableRightHand: TrackedHand | null
+): TrackedHand | null {
+  return handedness === "Left" ? stableLeftHand : stableRightHand;
+}
+
+function resolveCandidateKeyFromZones(
+  blackZone: number | null,
+  whiteZone: number | null
+): string | null {
+  if (blackZone !== null) {
+    return `black:${blackZone}`;
+  }
+  if (whiteZone !== null) {
+    return `white:${whiteZone}`;
+  }
+  return null;
+}
+
+function getStableTouchDurationMs(
+  previousMemory: TipIntentMemory | undefined,
+  candidateKey: string | null,
+  timestamp: number
+): number {
+  const sameCandidateKey = candidateKey !== null && candidateKey === previousMemory?.candidateKey;
+  if (!sameCandidateKey) {
+    return 0;
+  }
+
+  return Math.min(
+    (previousMemory?.stableMs ?? 0) +
+      Math.max(timestamp - (previousMemory?.timestamp ?? timestamp), 0),
+    240
+  );
+}
+
+function getDisplayedActiveCircleSegments(
+  suppressNormalAudio: boolean,
+  isCircleMode: boolean,
+  circleSegmentSets: Record<Handedness, Set<number>>
+): Record<Handedness, number[]> {
+  if (suppressNormalAudio || !isCircleMode) {
+    return { Left: [], Right: [] };
+  }
+
+  return {
+    Left: [...circleSegmentSets.Left],
+    Right: [...circleSegmentSets.Right]
+  };
+}
+
+function getDisplayedActiveTouchMarkers(
+  suppressNormalAudio: boolean,
+  isCircleMode: boolean,
+  activeCircleTouchMarkers: ActiveTouchMarker[],
+  activeTouchMarkers: ActiveTouchMarker[]
+): ActiveTouchMarker[] {
+  if (suppressNormalAudio) {
+    return [];
+  }
+
+  return isCircleMode ? activeCircleTouchMarkers : activeTouchMarkers;
+}
+
+function getCalibrationPreviewMidiSignature(
+  session: PlayingFeelCalibrationSession,
+  calibrationAudioMode: InstrumentSettings["calibrationAudioMode"],
+  activeMidiNotes: number[]
+): string {
+  const previewPhaseActive = session.active && session.phase === "preview";
+  if (!previewPhaseActive || calibrationAudioMode !== "target-preview") {
+    return "";
+  }
+
+  return activeMidiNotes.join(",");
+}
+
+function resolveDisplaySystemState(
+  trackedHandsCount: number,
+  displayedActiveSemitones: number[]
+): InteractionState["systemState"] {
+  if (trackedHandsCount === 0) {
+    return "TRACKING_SEARCH";
+  }
+  if (displayedActiveSemitones.length > 0) {
+    return "PLAYING";
+  }
+  return "TRACKING_ACTIVE";
+}
+
+function resolveCurrentRootLabel(
+  displayedActiveSemitones: number[],
+  displayedActiveRootLabels: string[],
+  smoothedNoteX: number | null,
+  displayedActiveNaturalZones: number[],
+  labelStyle: InstrumentSettings["labelStyle"],
+  pianoOctaves: number
+): string | null {
+  if (displayedActiveSemitones.length > 0) {
+    return displayedActiveRootLabels.join(" • ");
+  }
+  if (smoothedNoteX === null || displayedActiveNaturalZones.length === 0) {
+    return null;
+  }
+
+  return describeRootSemitone(
+    naturalZoneToSemitone(displayedActiveNaturalZones[0], false, pianoOctaves),
+    labelStyle
+  );
+}
+
+function resolveCurrentChordLabel(
+  displayedActiveNoteLabels: string[],
+  isCircleMode: boolean
+): string {
+  if (displayedActiveNoteLabels.length > 0) {
+    return displayedActiveNoteLabels.join(" • ");
+  }
+  return isCircleMode ? "Circle ready" : "Waiting for touch";
+}
+
+function resolveFocusTipLabel(
+  focusTouchMarker: ActiveTouchMarker | null,
+  primaryHand: TrackedHand | null
+): string | null {
+  if (focusTouchMarker !== null) {
+    return `${focusTouchMarker.stableHandedness.toLowerCase()} ${tipIndexToFingerName(focusTouchMarker.tipIndex)}`;
+  }
+  if (primaryHand) {
+    return "primary index";
+  }
+  return null;
+}
+
+function findFocusTouchMarker(
+  displayedActiveTouchMarkers: ActiveTouchMarker[]
+): ActiveTouchMarker | null {
+  let focusTouchMarker: ActiveTouchMarker | null = null;
+  for (const marker of displayedActiveTouchMarkers) {
+    if (
+      !focusTouchMarker ||
+      Number(marker.isPressed) > Number(focusTouchMarker.isPressed) ||
+      (marker.isPressed === focusTouchMarker.isPressed &&
+        marker.depthScore > focusTouchMarker.depthScore)
+    ) {
+      focusTouchMarker = marker;
+    }
+  }
+  return focusTouchMarker;
+}
+
+function resolveFocusHand(
+  focusTouchMarker: ActiveTouchMarker | null,
+  trackedHands: TrackedHand[],
+  primaryHand: TrackedHand | null
+): TrackedHand | null {
+  if (!focusTouchMarker) {
+    return primaryHand;
+  }
+
+  return trackedHands.find((hand) => hand.id === focusTouchMarker.handId) ?? null;
+}
+
+function resolveFocusLandmark(
+  focusTouchMarker: ActiveTouchMarker | null,
+  focusHand: TrackedHand | null,
+  primaryHand: TrackedHand | null
+): Landmark | null {
+  if (focusTouchMarker && focusHand) {
+    return focusHand.landmarks[focusTouchMarker.tipIndex];
+  }
+
+  return primaryHand?.landmarks[8] ?? null;
+}
+
+function countTouchTips(
+  isCircleMode: boolean,
+  displayedActiveCircleMarkers: ActiveCircleMarker[],
+  directBlackTouches: Set<number>,
+  groupedWhiteTouches: Map<number, number>
+): number {
+  if (isCircleMode) {
+    return displayedActiveCircleMarkers.length;
+  }
+
+  let touchTips = directBlackTouches.size;
+  for (const count of groupedWhiteTouches.values()) {
+    touchTips += count;
+  }
+  return touchTips;
+}
+
+function buildCalibrationTargetSample(
+  calibrationSession: PlayingFeelCalibrationSession,
+  targetHand: TrackedHand | null,
+  settings: InstrumentSettings,
+  pianoLayout: PianoLayout,
+  timestamp: number
+): CalibrationFrameSample | null {
+  if (!calibrationSession.active || !targetHand) {
+    return null;
+  }
+
+  const tipIndex = FINGER_NAME_TO_TIP_INDEX[calibrationSession.targetFinger];
+  const tip = targetHand.landmarks[tipIndex];
+  const rawDepth = getTipDepthScore(targetHand, tipIndex);
+  if (!tip || rawDepth === null) {
+    return null;
+  }
+
+  const strictProjectedX = projectToNoteStripX(
+    tip.x,
+    settings.noteStripSize,
+    0.035,
+    settings.pianoWidthScale
+  );
+  const looseProjectedX = projectToNoteStripX(
+    tip.x,
+    settings.noteStripSize,
+    0.08,
+    settings.pianoWidthScale
+  );
+  const inHoverMargin =
+    tip.y >= pianoLayout.topY - CALIBRATION_STABILITY_THRESHOLDS.hoverAcquisitionMargin &&
+    tip.y <= pianoLayout.bottomY + CALIBRATION_STABILITY_THRESHOLDS.hoverAcquisitionMargin;
+  const sensitivity =
+    settings.fingerDepthSensitivity[calibrationSession.targetHand][calibrationSession.targetFinger];
+  const candidateKey =
+    strictProjectedX === null ? null : resolvePianoKeyAt(strictProjectedX, tip.y, pianoLayout);
+  const looseZone =
+    looseProjectedX !== null && inHoverMargin
+      ? resolvePianoKeyAt(
+          looseProjectedX,
+          Math.min(Math.max(tip.y, pianoLayout.topY), pianoLayout.bottomY),
+          pianoLayout,
+          candidateKey
+        )
+      : null;
+  const resolvedKey = candidateKey ?? looseZone;
+
+  return {
+    timestamp,
+    hand: calibrationSession.targetHand,
+    finger: calibrationSession.targetFinger,
+    x: tip.x,
+    y: tip.y,
+    rawDepth,
+    weightedDepth: getEffectiveDepthScore(rawDepth, sensitivity),
+    sensitivity,
+    candidateKey,
+    nearKey: resolvedKey,
+    midiNote: keyToMidiNote(resolvedKey, settings.pianoOctaves),
+    visible: inHoverMargin && looseProjectedX !== null
+  };
+}
+
+interface PianoTouchPipelineResult {
+  groupedWhiteTouches: Map<number, number>;
+  directBlackTouches: Set<number>;
+  touchSamples: CalibrationTouchSample[];
+  activeTouchMarkers: ActiveTouchMarker[];
+  nextFingerDepthSamplesByHand: HandedFingerDepthSamples;
+  nextWeightedFingerDepthSamplesByHand: HandedFingerDepthSamples;
+  nextFingerDepthSampleTimestampsByHand: HandedFingerDepthSamples;
+  nextTipIntentMemory: Record<string, TipIntentMemory>;
+}
+
+function createEmptyPianoTouchPipelineResult(): PianoTouchPipelineResult {
+  return {
+    groupedWhiteTouches: new Map<number, number>(),
+    directBlackTouches: new Set<number>(),
+    touchSamples: [],
+    activeTouchMarkers: [],
+    nextFingerDepthSamplesByHand: emptyHandedFingerDepthSamples(),
+    nextWeightedFingerDepthSamplesByHand: emptyHandedFingerDepthSamples(),
+    nextFingerDepthSampleTimestampsByHand: emptyHandedFingerDepthSamples(),
+    nextTipIntentMemory: {}
+  };
+}
+
+function runPianoTouchPipeline(
+  trackedHands: TrackedHand[],
+  settings: InstrumentSettings,
+  frame: TrackerFrame,
+  pianoLayout: PianoLayout,
+  stableHandednessById: Map<string, Handedness>,
+  previousTipIntentMemory: Record<string, TipIntentMemory>
+): PianoTouchPipelineResult {
+  const result = createEmptyPianoTouchPipelineResult();
+
+  trackedHands.forEach((hand) => {
+    PLAYABLE_FINGERTIP_INDEXES.forEach((tipIndex) => {
+      const tip = hand.landmarks[tipIndex];
+      if (!tip) {
+        return;
+      }
+
+      const projectedX = projectToNoteStripX(
+        tip.x,
+        settings.noteStripSize,
+        0.035,
+        settings.pianoWidthScale
+      );
+      if (projectedX === null) {
+        return;
+      }
+      const inPianoBounds = tip.y >= pianoLayout.topY && tip.y <= pianoLayout.bottomY;
+      if (!inPianoBounds) {
+        return;
+      }
+
+      const depthScore = getTipDepthScore(hand, tipIndex);
+      if (depthScore === null) {
+        return;
+      }
+
+      const fingertipName = tipIndexToFingerName(tipIndex);
+      const stableHandedness = stableHandednessById.get(hand.id) ?? hand.handedness;
+      const depthGate = settings.depthGate[stableHandedness];
+      const sensitivity = settings.fingerDepthSensitivity[stableHandedness][fingertipName];
+      const effectiveDepthScore = getEffectiveDepthScore(depthScore, sensitivity);
+      result.nextFingerDepthSamplesByHand[stableHandedness] = recordFingerDepthSample(
+        result.nextFingerDepthSamplesByHand[stableHandedness],
+        fingertipName,
+        depthScore
+      );
+      result.nextWeightedFingerDepthSamplesByHand[stableHandedness] = recordFingerDepthSample(
+        result.nextWeightedFingerDepthSamplesByHand[stableHandedness],
+        fingertipName,
+        effectiveDepthScore
+      );
+      result.nextFingerDepthSampleTimestampsByHand[stableHandedness] = {
+        ...result.nextFingerDepthSampleTimestampsByHand[stableHandedness],
+        [fingertipName]: frame.timestamp
+      };
+      result.touchSamples.push({
+        handedness: stableHandedness,
+        finger: fingertipName,
+        rawDepthScore: depthScore,
+        effectiveDepthScore
+      });
+      const memoryKey = `${stableHandedness}:${tipIndex}`;
+      const previousMemory = previousTipIntentMemory[memoryKey];
+      const touchActivation = getTouchActivation({
+        effectiveDepthScore,
+        depthGate,
+        calibration: settings.touchCalibration[stableHandedness][fingertipName],
+        sensitivity
+      });
+      const elapsedMs = Math.max(frame.timestamp - (previousMemory?.timestamp ?? frame.timestamp), 0);
+      const activationVelocity = getActivationVelocity({
+        previousActivation: previousMemory?.activation ?? null,
+        nextActivation: touchActivation.activation,
+        elapsedMs,
+        previousVelocity: previousMemory?.activationVelocity ?? 0,
+        smoothing:
+          settings.activationTuning[stableHandedness][fingertipName].activationVelocitySmoothing
+      });
+      const blackZone = resolveBlackKeyHit(projectedX, tip.y, pianoLayout);
+      const whiteZone =
+        blackZone === null
+          ? resolveWhiteKeyHit(
+              projectedX,
+              tip.y,
+              pianoLayout,
+              getPreviousWhiteZone(previousMemory?.candidateKey)
+            )
+          : null;
+      const candidateKey = resolveCandidateKeyFromZones(blackZone, whiteZone);
+      const stableMs = getStableTouchDurationMs(previousMemory, candidateKey, frame.timestamp);
+      const tuning = settings.activationTuning[stableHandedness][fingertipName];
+      const isPressed = shouldPressTouch({
+        currentKey: candidateKey,
+        previousKey: previousMemory?.candidateKey ?? null,
+        previousPressed: previousMemory?.pressed ?? false,
+        stableMs,
+        activation: touchActivation.activation,
+        activationVelocity,
+        tuning: {
+          hardActivationThreshold: tuning.hardActivationThreshold,
+          pressActivationThreshold: tuning.pressActivationThreshold,
+          releaseActivationThreshold: tuning.releaseActivationThreshold,
+          stablePressMs: tuning.touchDwellMs,
+          pressVelocityThreshold: tuning.pressVelocityThreshold,
+          releaseVelocityThreshold: tuning.releaseVelocityThreshold
+        }
+      });
+
+      result.activeTouchMarkers.push({
+        handId: hand.id,
+        stableHandedness,
+        tipIndex,
+        source: "piano",
+        modelZ: tip.z,
+        rawDepthScore: depthScore,
+        sensitivity,
+        depthScore: effectiveDepthScore,
+        activationProgress: touchActivation.activation,
+        activationVelocity,
+        isCalibrated: touchActivation.calibrated,
+        isPressed
+      });
+      result.nextTipIntentMemory[memoryKey] = {
+        timestamp: frame.timestamp,
+        y: tip.y,
+        effectiveDepthScore,
+        activation: touchActivation.activation,
+        activationVelocity,
+        candidateKey,
+        stableMs,
+        pressed: isPressed
+      };
+
+      if (!isPressed) {
+        return;
+      }
+      if (blackZone !== null) {
+        result.directBlackTouches.add(blackZone);
+        return;
+      }
+      if (whiteZone === null) {
+        return;
+      }
+
+      result.groupedWhiteTouches.set(
+        whiteZone,
+        (result.groupedWhiteTouches.get(whiteZone) ?? 0) + 1
+      );
+    });
+  });
+
+  return result;
+}
+
+interface CircleModePipelineResult {
+  activeCircleMarkers: ActiveCircleMarker[];
+  activeCircleTouchMarkers: ActiveTouchMarker[];
+  circleRootSemitones: number[];
+  circleRootMidis: number[];
+  circleMidiNotes: number[];
+  circleNoteLabels: string[];
+  circleRootLabels: string[];
+  circleSegmentSets: Record<Handedness, Set<number>>;
+}
+
+function runCircleModePipeline(
+  stableLeftHand: TrackedHand | null,
+  stableRightHand: TrackedHand | null,
+  settings: InstrumentSettings
+): CircleModePipelineResult {
+  const circleSegmentSets: Record<Handedness, Set<number>> = {
+    Left: new Set<number>(),
+    Right: new Set<number>()
+  };
+  const activeCircleMarkers: ActiveCircleMarker[] = [];
+  const activeCircleTouchMarkers: ActiveTouchMarker[] = [];
+  const circleRootSemitoneSet = new Set<number>();
+  const circleRootMidiSet = new Set<number>();
+  const circleMidiNoteSet = new Set<number>();
+  const circleChordLabelSet = new Set<string>();
+  const circleNoteLabels: string[] = [];
+
+  ([
+    ["Left", stableLeftHand],
+    ["Right", stableRightHand]
+  ] as const).forEach(([stableHandedness, hand]) => {
+    if (!hand) {
+      return;
+    }
+
+    const circleLayout = getCircleLayout(stableHandedness);
+    const handFeatures = extractHandFeatures(hand.landmarks);
+    const enabledFingerCount = PLAYABLE_FINGERTIP_INDEXES.filter((tipIndex) => {
+      const finger = tipIndexToFingerName(tipIndex);
+      return settings.circleFingerEnabled[stableHandedness][finger];
+    }).length;
+    const chordMode = shouldUseCircleChordVoicing(enabledFingerCount)
+      ? classifyCircleChordQuality(handFeatures)
+      : "single";
+    const octaveShift = getCircleOctaveShiftForPose(
+      handFeatures,
+      settings.circleOpenOctaveShift[stableHandedness]
+    );
+    const useFifths = settings.circleOfFifths[stableHandedness];
+
+    PLAYABLE_FINGERTIP_INDEXES.forEach((tipIndex) => {
+      const finger = tipIndexToFingerName(tipIndex);
+      if (!settings.circleFingerEnabled[stableHandedness][finger]) {
+        return;
+      }
+
+      const tip = hand.landmarks[tipIndex];
+      const segment = tip ? resolveCircleSegment(tip, circleLayout) : null;
+      if (segment === null) {
+        return;
+      }
+
+      const rootSemitone = getCircleRootSemitone(segment, useFifths);
+      const rootLabel = getCircleRootLabel(segment, useFifths);
+      const rootMidi = getMidiForSemitoneOctave(
+        rootSemitone,
+        settings.circleNoteOctaves[stableHandedness][rootLabel] + octaveShift
+      );
+      const label = describeMidiChord(rootMidi, chordMode, settings.labelStyle);
+      const labelSignature = `${rootMidi}:${chordMode}`;
+      circleSegmentSets[stableHandedness].add(segment);
+      circleRootSemitoneSet.add(rootSemitone);
+      circleRootMidiSet.add(rootMidi);
+      for (const midiNote of buildVoicingFromMidiRoot(rootMidi, chordMode)) {
+        circleMidiNoteSet.add(midiNote);
+      }
+
+      if (!circleChordLabelSet.has(labelSignature)) {
+        circleChordLabelSet.add(labelSignature);
+        circleNoteLabels.push(label);
+      }
+
+      activeCircleMarkers.push({
+        handId: hand.id,
+        stableHandedness,
+        finger,
+        tipIndex,
+        segment,
+        rootSemitone,
+        rootMidi,
+        chordMode,
+        label
+      });
+      activeCircleTouchMarkers.push({
+        handId: hand.id,
+        stableHandedness,
+        tipIndex,
+        source: "circle",
+        modelZ: tip.z,
+        rawDepthScore: 0,
+        sensitivity: 1,
+        depthScore: 0,
+        activationProgress: 1,
+        activationVelocity: 0,
+        isCalibrated: true,
+        isPressed: true
+      });
+    });
+  });
+
+  const circleRootMidis = [...circleRootMidiSet].sort((left, right) => left - right);
+  return {
+    activeCircleMarkers,
+    activeCircleTouchMarkers,
+    circleRootSemitones: [...circleRootSemitoneSet].sort((left, right) => left - right),
+    circleRootMidis,
+    circleMidiNotes: [...circleMidiNoteSet].sort((left, right) => left - right),
+    circleNoteLabels,
+    circleRootLabels: circleRootMidis.map((midi) => describeMidiNote(midi, settings.labelStyle)),
+    circleSegmentSets
+  };
+}
+
+function syncCalibrationUpdateSideEffects(params: {
+  calibrationUpdate: CalibrationUpdateResult;
+  calibrationAudioMode: InstrumentSettings["calibrationAudioMode"];
+  timestamp: number;
+  applyCalibrationCommit: (commit: CalibrationCommit) => void;
+  calibrationSessionRef: CurrentRef<PlayingFeelCalibrationSession>;
+  audioRef: CurrentRef<AudioEngine | null>;
+  lastCalibrationPhaseRef: CurrentRef<PlayingFeelCalibrationSession["phase"]>;
+  lastMidiSignatureRef: CurrentRef<string | null>;
+  lastCalibrationPreviewMidiSignatureRef: CurrentRef<string | null>;
+  preCalibrationSettingsRef: CurrentRef<InstrumentSettings | null>;
+  settingsSaveTimeoutRef: CurrentRef<number | null>;
+  lastCalibrationPreviewToneAtRef: CurrentRef<number>;
+  settingsRef: CurrentRef<InstrumentSettings>;
+}): void {
+  const {
+    calibrationUpdate,
+    calibrationAudioMode,
+    timestamp,
+    applyCalibrationCommit,
+    calibrationSessionRef,
+    audioRef,
+    lastCalibrationPhaseRef,
+    lastMidiSignatureRef,
+    lastCalibrationPreviewMidiSignatureRef,
+    preCalibrationSettingsRef,
+    settingsSaveTimeoutRef,
+    lastCalibrationPreviewToneAtRef,
+    settingsRef
+  } = params;
+
+  if (calibrationUpdate.commit) {
+    applyCalibrationCommit(calibrationUpdate.commit);
+  }
+  calibrationSessionRef.current = calibrationUpdate.session;
+
+  const calibrationPhaseChanged = lastCalibrationPhaseRef.current !== calibrationUpdate.session.phase;
+  if (calibrationPhaseChanged) {
+    audioRef.current?.syncMidiNotes([]);
+    audioRef.current?.stopCalibrationPreview();
+    lastMidiSignatureRef.current = "";
+    lastCalibrationPreviewMidiSignatureRef.current = "";
+    lastCalibrationPhaseRef.current = calibrationUpdate.session.phase;
+  }
+  if (!calibrationUpdate.session.active && calibrationUpdate.session.phase === "complete") {
+    preCalibrationSettingsRef.current = null;
+    if (settingsSaveTimeoutRef.current !== null) {
+      window.clearTimeout(settingsSaveTimeoutRef.current);
+      settingsSaveTimeoutRef.current = null;
+    }
+    void saveInstrumentSettings(settingsRef.current).catch(() => undefined);
+  }
+  if (calibrationUpdate.cue && calibrationAudioMode !== "off") {
+    audioRef.current?.triggerCalibrationCue(calibrationUpdate.cue);
+  }
+  if (
+    calibrationAudioMode === "target-preview" &&
+    calibrationUpdate.session.phase === "capture-taps" &&
+    calibrationUpdate.session.previewMidiNote !== null &&
+    timestamp - lastCalibrationPreviewToneAtRef.current > 160
+  ) {
+    audioRef.current?.triggerCalibrationTone(calibrationUpdate.session.previewMidiNote, 0.08, 0.22);
+    lastCalibrationPreviewToneAtRef.current = timestamp;
+  }
+}
+
+function syncPianoTouchCaches(params: {
+  shouldRunPianoTouchPipeline: boolean;
+  pianoTouchState: PianoTouchPipelineResult;
+  latestFingerDepthSamplesRef: CurrentRef<HandedFingerDepthSamples>;
+  latestWeightedFingerDepthSamplesRef: CurrentRef<HandedFingerDepthSamples>;
+  latestFingerDepthSampleTimestampsRef: CurrentRef<HandedFingerDepthSamples>;
+  tipIntentMemoryRef: CurrentRef<Record<string, TipIntentMemory>>;
+  latestTouchDepthRef: CurrentRef<HandedTouchDepthMap>;
+}): void {
+  const {
+    shouldRunPianoTouchPipeline,
+    pianoTouchState,
+    latestFingerDepthSamplesRef,
+    latestWeightedFingerDepthSamplesRef,
+    latestFingerDepthSampleTimestampsRef,
+    tipIntentMemoryRef,
+    latestTouchDepthRef
+  } = params;
+
+  if (!shouldRunPianoTouchPipeline) {
+    latestFingerDepthSamplesRef.current = emptyHandedFingerDepthSamples();
+    latestWeightedFingerDepthSamplesRef.current = emptyHandedFingerDepthSamples();
+    latestFingerDepthSampleTimestampsRef.current = emptyHandedFingerDepthSamples();
+    tipIntentMemoryRef.current = {};
+    latestTouchDepthRef.current = emptyHandedTouchDepthMap();
+    return;
+  }
+
+  latestFingerDepthSamplesRef.current = {
+    Left: getCalibrationFingerSamples(pianoTouchState.nextFingerDepthSamplesByHand, "Left"),
+    Right: getCalibrationFingerSamples(pianoTouchState.nextFingerDepthSamplesByHand, "Right")
+  };
+  latestWeightedFingerDepthSamplesRef.current = {
+    Left: getCalibrationFingerSamples(pianoTouchState.nextWeightedFingerDepthSamplesByHand, "Left"),
+    Right: getCalibrationFingerSamples(
+      pianoTouchState.nextWeightedFingerDepthSamplesByHand,
+      "Right"
+    )
+  };
+  latestFingerDepthSampleTimestampsRef.current = {
+    Left: getCalibrationFingerSamples(
+      pianoTouchState.nextFingerDepthSampleTimestampsByHand,
+      "Left"
+    ),
+    Right: getCalibrationFingerSamples(
+      pianoTouchState.nextFingerDepthSampleTimestampsByHand,
+      "Right"
+    )
+  };
+  tipIntentMemoryRef.current = pianoTouchState.nextTipIntentMemory;
+  latestTouchDepthRef.current = {
+    Left: getCalibrationDepthScore(pianoTouchState.touchSamples, "Left"),
+    Right: getCalibrationDepthScore(pianoTouchState.touchSamples, "Right")
+  };
+}
+
+interface PianoPlaybackState {
+  activeNaturalZones: number[];
+  activeSharpZones: number[];
+  activeSemitones: number[];
+  activeMidiNotes: number[];
+  activeNoteLabels: string[];
+}
+
+function derivePianoPlaybackState(
+  shouldRunPianoTouchPipeline: boolean,
+  pianoTouchState: PianoTouchPipelineResult,
+  settings: InstrumentSettings
+): PianoPlaybackState {
+  if (!shouldRunPianoTouchPipeline) {
+    return {
+      activeNaturalZones: [],
+      activeSharpZones: [],
+      activeSemitones: [],
+      activeMidiNotes: [],
+      activeNoteLabels: []
+    };
+  }
+
+  const { activeNaturalZones, activeSharpZones } = resolveActiveTouchState(
+    pianoTouchState.groupedWhiteTouches,
+    pianoTouchState.directBlackTouches,
+    settings.pianoOctaves
+  );
+  const activeSemitones = [
+    ...activeNaturalZones.map((zone) => naturalZoneToSemitone(zone, false, settings.pianoOctaves)),
+    ...activeSharpZones.map((zone) => naturalZoneToSemitone(zone, true, settings.pianoOctaves))
+  ].sort((left, right) => left - right);
+
+  return {
+    activeNaturalZones,
+    activeSharpZones,
+    activeSemitones,
+    activeMidiNotes: activeSemitones.map((semitone) => getRootMidi(semitone)),
+    activeNoteLabels: activeSemitones.map((semitone) =>
+      describeRootSemitone(semitone, settings.labelStyle)
+    )
+  };
+}
+
+function syncPlaybackAudio(params: {
+  audioRef: CurrentRef<AudioEngine | null>;
+  lastMidiSignatureRef: CurrentRef<string | null>;
+  lastCalibrationPreviewMidiSignatureRef: CurrentRef<string | null>;
+  suppressNormalAudio: boolean;
+  playableMidiNotes: number[];
+  normalMidiSignature: string;
+  calibrationPreviewMidiSignature: string;
+  activeMidiNotes: number[];
+}): void {
+  const {
+    audioRef,
+    lastMidiSignatureRef,
+    lastCalibrationPreviewMidiSignatureRef,
+    suppressNormalAudio,
+    playableMidiNotes,
+    normalMidiSignature,
+    calibrationPreviewMidiSignature,
+    activeMidiNotes
+  } = params;
+
+  if (lastMidiSignatureRef.current !== normalMidiSignature) {
+    audioRef.current?.syncMidiNotes(suppressNormalAudio ? [] : playableMidiNotes);
+    lastMidiSignatureRef.current = normalMidiSignature;
+  }
+  if (
+    calibrationPreviewMidiSignature &&
+    lastCalibrationPreviewMidiSignatureRef.current !== calibrationPreviewMidiSignature
+  ) {
+    audioRef.current?.syncCalibrationPreviewNotes(activeMidiNotes, 0.24);
+    lastCalibrationPreviewMidiSignatureRef.current = calibrationPreviewMidiSignature;
+    return;
+  }
+
+  if (!calibrationPreviewMidiSignature && lastCalibrationPreviewMidiSignatureRef.current) {
+    audioRef.current?.stopCalibrationPreview();
+    lastCalibrationPreviewMidiSignatureRef.current = "";
+  }
+}
+
+function buildDisplayInteractionState(params: {
+  previous: InteractionState;
+  trackedHandsCount: number;
+  displayedActiveNaturalZones: number[];
+  displayedActiveSharpZones: number[];
+  displayedActiveSemitones: number[];
+  timestamp: number;
+}): InteractionState {
+  const {
+    previous,
+    trackedHandsCount,
+    displayedActiveNaturalZones,
+    displayedActiveSharpZones,
+    displayedActiveSemitones,
+    timestamp
+  } = params;
+
+  return {
+    ...previous,
+    systemState: resolveDisplaySystemState(trackedHandsCount, displayedActiveSemitones),
+    stableMode: "single",
+    currentZone: displayedActiveNaturalZones[0] ?? displayedActiveSharpZones[0] ?? null,
+    currentRoot: displayedActiveSemitones[0] ?? null,
+    currentRootSince: displayedActiveSemitones.length > 0 ? timestamp : null,
+    lastTriggeredRoot: displayedActiveSemitones[0] ?? null,
+    lastTriggerAt: displayedActiveSemitones.length > 0 ? timestamp : previous.lastTriggerAt,
+    lastNoteVisibleAt: trackedHandsCount > 0 ? timestamp : previous.lastNoteVisibleAt,
+    lastChordVisibleAt: null,
+    chordCandidateMode: null,
+    chordCandidateSince: null,
+    ambiguousSince: null,
+    notePinchActive: false,
+    isSounding: displayedActiveSemitones.length > 0,
+    warnings: []
+  };
+}
+
+function appendFrameLogs(params: {
+  previous: InteractionState;
+  nextInteraction: InteractionState;
+  timestamp: number;
+  playMode: InstrumentSettings["playMode"];
+  displayedActiveSemitones: number[];
+  displayedActiveNoteLabels: string[];
+  suppressNormalAudio: boolean;
+  playableMidiNotes: number[];
+  trackedHandsCount: number;
+  loggerRef: CurrentRef<SessionLogger>;
+  lastLoggedSemitoneSignatureRef: CurrentRef<string>;
+  lastTrackingDropLogAtRef: CurrentRef<number>;
+  currentLogCount: number;
+}): { logCount: number; displayedAudioSignature: string } {
+  const {
+    previous,
+    nextInteraction,
+    timestamp,
+    playMode,
+    displayedActiveSemitones,
+    displayedActiveNoteLabels,
+    suppressNormalAudio,
+    playableMidiNotes,
+    trackedHandsCount,
+    loggerRef,
+    lastLoggedSemitoneSignatureRef,
+    lastTrackingDropLogAtRef,
+    currentLogCount
+  } = params;
+
+  let logCount = currentLogCount;
+  if (nextInteraction.currentZone !== previous.currentZone && nextInteraction.currentZone !== null) {
+    logCount = appendLog(loggerRef.current, {
+      type: "note-zone",
+      timestamp,
+      payload: { zone: nextInteraction.currentZone }
+    });
+  }
+
+  const displayedAudioSignature = [
+    playMode,
+    displayedActiveSemitones.join(","),
+    displayedActiveNoteLabels.join(","),
+    suppressNormalAudio ? "" : playableMidiNotes.join(",")
+  ].join("|");
+  if (displayedAudioSignature !== lastLoggedSemitoneSignatureRef.current) {
+    logCount = appendLog(loggerRef.current, {
+      type: "audio-event",
+      timestamp,
+      payload: {
+        playMode,
+        activeSemitones: displayedActiveSemitones,
+        activeMidiNotes: suppressNormalAudio ? [] : playableMidiNotes,
+        activeLabels: displayedActiveNoteLabels
+      }
+    });
+    lastLoggedSemitoneSignatureRef.current = displayedAudioSignature;
+  }
+
+  const trackingDropped =
+    trackedHandsCount === 0 &&
+    timestamp - lastTrackingDropLogAtRef.current >= TRACKING_DROP_LOG_INTERVAL_MS;
+  if (trackingDropped) {
+    logCount = appendLog(loggerRef.current, {
+      type: "tracking-drop",
+      timestamp,
+      payload: { reason: "no-hands-visible" }
+    });
+    lastTrackingDropLogAtRef.current = timestamp;
+  }
+
+  return { logCount, displayedAudioSignature };
+}
+
+function publishRenderStateIfNeeded(params: {
+  renderSignature: string;
+  frameTimestamp: number;
+  lastRenderSignatureRef: CurrentRef<string>;
+  lastRenderStateAtRef: CurrentRef<number>;
+  setRenderState: (next: InstrumentViewState) => void;
+  nextState: InstrumentViewState;
+}): void {
+  const {
+    renderSignature,
+    frameTimestamp,
+    lastRenderSignatureRef,
+    lastRenderStateAtRef,
+    setRenderState,
+    nextState
+  } = params;
+
+  const shouldPublishRender =
+    renderSignature !== lastRenderSignatureRef.current ||
+    frameTimestamp - lastRenderStateAtRef.current >= RENDER_FRAME_INTERVAL_MS;
+  if (!shouldPublishRender) {
+    return;
+  }
+
+  lastRenderSignatureRef.current = renderSignature;
+  lastRenderStateAtRef.current = frameTimestamp;
+  setRenderState(nextState);
+}
+
 export function useGestureInstrument(): {
-  videoRef: MutableRefObject<HTMLVideoElement | null>;
+  videoRef: RefObject<HTMLVideoElement | null>;
   state: InstrumentViewState;
   startTracking: () => Promise<void>;
   stopTracking: () => void;
@@ -740,7 +1655,6 @@ export function useGestureInstrument(): {
       const overlayAlpha = getOverlaySmoothingAlpha(liveSettings.trackingSensitivity);
       const sortedHands = [...trackedHands].sort((left, right) => averageHandX(right) - averageHandX(left));
       const primaryHand = sortedHands[0] ?? null;
-      const secondaryHand = sortedHands[1] ?? null;
       const noteRawX = primaryHand ? primaryHand.landmarks[8]?.x ?? null : null;
       const noteY = primaryHand ? primaryHand.landmarks[8]?.y ?? null : null;
       const noteX = projectToNoteStripX(
@@ -777,18 +1691,12 @@ export function useGestureInstrument(): {
       const { pianoLayout, stripBounds } = frameGeometry;
       const calibrationSession = calibrationSessionRef.current;
       const calibrationActive = calibrationSession.active;
-      const targetHand =
-        calibrationActive && calibrationSession.targetHand === "Left"
-          ? stableLeftHand
-          : calibrationActive
-            ? stableRightHand
-            : null;
-      const controlHand =
-        calibrationActive && calibrationSession.controlHand === "Left"
-          ? stableLeftHand
-          : calibrationActive
-            ? stableRightHand
-            : null;
+      const targetHand = calibrationActive
+        ? getStableHand(calibrationSession.targetHand, stableLeftHand, stableRightHand)
+        : null;
+      const controlHand = calibrationActive
+        ? getStableHand(calibrationSession.controlHand, stableLeftHand, stableRightHand)
+        : null;
       const controlPalm = controlHand ? extractHandFeatures(controlHand.landmarks).palmCenter : null;
       const controlInsideZone =
         calibrationActive &&
@@ -810,61 +1718,13 @@ export function useGestureInstrument(): {
         (calibrationSession.targetHand === "Left"
           ? targetAvgX > controlAvgX
           : targetAvgX < controlAvgX);
-      let calibrationTargetSample: CalibrationFrameSample | null = null;
-
-      if (calibrationActive && targetHand) {
-        const tipIndex = FINGER_NAME_TO_TIP_INDEX[calibrationSession.targetFinger];
-        const tip = targetHand.landmarks[tipIndex];
-        const rawDepth = getTipDepthScore(targetHand, tipIndex);
-        if (tip && rawDepth !== null) {
-          const strictProjectedX = projectToNoteStripX(
-            tip.x,
-            liveSettings.noteStripSize,
-            0.035,
-            liveSettings.pianoWidthScale
-          );
-          const looseProjectedX = projectToNoteStripX(
-            tip.x,
-            liveSettings.noteStripSize,
-            0.08,
-            liveSettings.pianoWidthScale
-          );
-          const inHoverMargin =
-            tip.y >= pianoLayout.topY - CALIBRATION_STABILITY_THRESHOLDS.hoverAcquisitionMargin &&
-            tip.y <= pianoLayout.bottomY + CALIBRATION_STABILITY_THRESHOLDS.hoverAcquisitionMargin;
-          const sensitivity =
-            liveSettings.fingerDepthSensitivity[calibrationSession.targetHand][
-              calibrationSession.targetFinger
-            ];
-          const candidateKey =
-            strictProjectedX !== null
-              ? resolvePianoKeyAt(strictProjectedX, tip.y, pianoLayout)
-              : null;
-          const looseZone =
-            looseProjectedX !== null && inHoverMargin
-              ? resolvePianoKeyAt(
-                  looseProjectedX,
-                  Math.min(Math.max(tip.y, pianoLayout.topY), pianoLayout.bottomY),
-                  pianoLayout,
-                  candidateKey
-                )
-              : null;
-          calibrationTargetSample = {
-            timestamp: frame.timestamp,
-            hand: calibrationSession.targetHand,
-            finger: calibrationSession.targetFinger,
-            x: tip.x,
-            y: tip.y,
-            rawDepth,
-            weightedDepth: getEffectiveDepthScore(rawDepth, sensitivity),
-            sensitivity,
-            candidateKey,
-            nearKey: candidateKey ?? looseZone,
-            midiNote: keyToMidiNote(candidateKey ?? looseZone, liveSettings.pianoOctaves),
-            visible: inHoverMargin && looseProjectedX !== null
-          };
-        }
-      }
+      const calibrationTargetSample = buildCalibrationTargetSample(
+        calibrationSession,
+        targetHand,
+        liveSettings,
+        pianoLayout,
+        frame.timestamp
+      );
 
       const calibrationUpdate = updatePlayingFeelCalibrationSession(calibrationSession, {
         timestamp: frame.timestamp,
@@ -874,39 +1734,21 @@ export function useGestureInstrument(): {
         controlInsideZone,
         roleAmbiguous
       });
-      if (calibrationUpdate.commit) {
-        applyCalibrationCommit(calibrationUpdate.commit);
-      }
-      calibrationSessionRef.current = calibrationUpdate.session;
-      const calibrationPhaseChanged =
-        lastCalibrationPhaseRef.current !== calibrationUpdate.session.phase;
-      if (calibrationPhaseChanged) {
-        audioRef.current?.syncMidiNotes([]);
-        audioRef.current?.stopCalibrationPreview();
-        lastMidiSignatureRef.current = "";
-        lastCalibrationPreviewMidiSignatureRef.current = "";
-        lastCalibrationPhaseRef.current = calibrationUpdate.session.phase;
-      }
-      if (!calibrationUpdate.session.active && calibrationUpdate.session.phase === "complete") {
-        preCalibrationSettingsRef.current = null;
-        if (settingsSaveTimeoutRef.current !== null) {
-          window.clearTimeout(settingsSaveTimeoutRef.current);
-          settingsSaveTimeoutRef.current = null;
-        }
-        void saveInstrumentSettings(settingsRef.current).catch(() => undefined);
-      }
-      if (calibrationUpdate.cue && liveSettings.calibrationAudioMode !== "off") {
-        audioRef.current?.triggerCalibrationCue(calibrationUpdate.cue);
-      }
-      if (
-        liveSettings.calibrationAudioMode === "target-preview" &&
-        calibrationUpdate.session.phase === "capture-taps" &&
-        calibrationUpdate.session.previewMidiNote !== null &&
-        frame.timestamp - lastCalibrationPreviewToneAtRef.current > 160
-      ) {
-        audioRef.current?.triggerCalibrationTone(calibrationUpdate.session.previewMidiNote, 0.08, 0.22);
-        lastCalibrationPreviewToneAtRef.current = frame.timestamp;
-      }
+      syncCalibrationUpdateSideEffects({
+        calibrationUpdate,
+        calibrationAudioMode: liveSettings.calibrationAudioMode,
+        timestamp: frame.timestamp,
+        applyCalibrationCommit,
+        calibrationSessionRef,
+        audioRef,
+        lastCalibrationPhaseRef,
+        lastMidiSignatureRef,
+        lastCalibrationPreviewMidiSignatureRef,
+        preCalibrationSettingsRef,
+        settingsSaveTimeoutRef,
+        lastCalibrationPreviewToneAtRef,
+        settingsRef
+      });
 
       if (noteRawX !== null && noteY !== null) {
         noteTraceRef.current = [
@@ -917,463 +1759,138 @@ export function useGestureInstrument(): {
 
       const isCircleMode = liveSettings.playMode === "circle";
       const shouldRunPianoTouchPipeline = !isCircleMode || calibrationUpdate.session.active;
-      const groupedWhiteTouches = new Map<number, number>();
-      const directBlackTouches = new Set<number>();
-      const touchSamples: CalibrationTouchSample[] = [];
-      const activeTouchMarkers: ActiveTouchMarker[] = [];
-      const nextFingerDepthSamplesByHand = emptyHandedFingerDepthSamples();
-      const nextWeightedFingerDepthSamplesByHand = emptyHandedFingerDepthSamples();
-      const nextFingerDepthSampleTimestampsByHand = emptyHandedFingerDepthSamples();
-      const nextTipIntentMemory: Record<string, TipIntentMemory> = {};
+      const pianoTouchState = shouldRunPianoTouchPipeline
+        ? runPianoTouchPipeline(
+            trackedHands,
+            liveSettings,
+            frame,
+            pianoLayout,
+            stableHandednessById,
+            tipIntentMemoryRef.current
+          )
+        : createEmptyPianoTouchPipelineResult();
 
-      if (shouldRunPianoTouchPipeline) {
-        trackedHands.forEach((hand) => {
-          PLAYABLE_FINGERTIP_INDEXES.forEach((tipIndex) => {
-            const tip = hand.landmarks[tipIndex];
-            if (!tip) {
-              return;
-            }
+      syncPianoTouchCaches({
+        shouldRunPianoTouchPipeline,
+        pianoTouchState,
+        latestFingerDepthSamplesRef,
+        latestWeightedFingerDepthSamplesRef,
+        latestFingerDepthSampleTimestampsRef,
+        tipIntentMemoryRef,
+        latestTouchDepthRef
+      });
 
-            const projectedX = projectToNoteStripX(
-              tip.x,
-              liveSettings.noteStripSize,
-              0.035,
-              liveSettings.pianoWidthScale
-            );
-            if (
-              projectedX === null ||
-              tip.y < pianoLayout.topY ||
-              tip.y > pianoLayout.bottomY
-            ) {
-              return;
-            }
-
-            const depthScore = getTipDepthScore(hand, tipIndex);
-            if (depthScore === null) {
-              return;
-            }
-
-            const fingertipName = tipIndexToFingerName(tipIndex);
-            const stableHandedness = stableHandednessById.get(hand.id) ?? hand.handedness;
-            const depthGate = liveSettings.depthGate[stableHandedness];
-            const sensitivity =
-              liveSettings.fingerDepthSensitivity[stableHandedness][fingertipName];
-            const effectiveDepthScore = getEffectiveDepthScore(depthScore, sensitivity);
-            nextFingerDepthSamplesByHand[stableHandedness] = recordFingerDepthSample(
-              nextFingerDepthSamplesByHand[stableHandedness],
-              fingertipName,
-              depthScore
-            );
-            nextWeightedFingerDepthSamplesByHand[stableHandedness] = recordFingerDepthSample(
-              nextWeightedFingerDepthSamplesByHand[stableHandedness],
-              fingertipName,
-              effectiveDepthScore
-            );
-            nextFingerDepthSampleTimestampsByHand[stableHandedness] = {
-              ...nextFingerDepthSampleTimestampsByHand[stableHandedness],
-              [fingertipName]: frame.timestamp
-            };
-            touchSamples.push({
-              handedness: stableHandedness,
-              finger: fingertipName,
-              rawDepthScore: depthScore,
-              effectiveDepthScore
-            });
-            const memoryKey = `${stableHandedness}:${tipIndex}`;
-            const previousMemory = tipIntentMemoryRef.current[memoryKey];
-            const touchActivation = getTouchActivation({
-              effectiveDepthScore,
-              depthGate,
-              calibration: liveSettings.touchCalibration[stableHandedness][fingertipName],
-              sensitivity
-            });
-            const elapsedMs = Math.max(
-              frame.timestamp - (previousMemory?.timestamp ?? frame.timestamp),
-              0
-            );
-            const activationVelocity = getActivationVelocity({
-              previousActivation: previousMemory?.activation ?? null,
-              nextActivation: touchActivation.activation,
-              elapsedMs,
-              previousVelocity: previousMemory?.activationVelocity ?? 0,
-              smoothing:
-                liveSettings.activationTuning[stableHandedness][fingertipName]
-                  .activationVelocitySmoothing
-            });
-            const blackZone = resolveBlackKeyHit(projectedX, tip.y, pianoLayout);
-            const whiteZone =
-              blackZone === null
-                ? resolveWhiteKeyHit(
-                    projectedX,
-                    tip.y,
-                    pianoLayout,
-                    getPreviousWhiteZone(previousMemory?.candidateKey)
-                  )
-                : null;
-            const candidateKey =
-              blackZone !== null
-                ? `black:${blackZone}`
-                : whiteZone !== null
-                  ? `white:${whiteZone}`
-                  : null;
-            const stableMs =
-              candidateKey !== null && candidateKey === previousMemory?.candidateKey
-                ? Math.min(
-                    (previousMemory?.stableMs ?? 0) +
-                      Math.max(frame.timestamp - (previousMemory?.timestamp ?? frame.timestamp), 0),
-                    240
-                  )
-                : 0;
-            const isPressed = shouldPressTouch({
-              currentKey: candidateKey,
-              previousKey: previousMemory?.candidateKey ?? null,
-              previousPressed: previousMemory?.pressed ?? false,
-              stableMs,
-              activation: touchActivation.activation,
-              activationVelocity,
-              tuning: {
-                hardActivationThreshold:
-                  liveSettings.activationTuning[stableHandedness][fingertipName]
-                    .hardActivationThreshold,
-                pressActivationThreshold:
-                  liveSettings.activationTuning[stableHandedness][fingertipName]
-                    .pressActivationThreshold,
-                releaseActivationThreshold:
-                  liveSettings.activationTuning[stableHandedness][fingertipName]
-                    .releaseActivationThreshold,
-                stablePressMs:
-                  liveSettings.activationTuning[stableHandedness][fingertipName].touchDwellMs,
-                pressVelocityThreshold:
-                  liveSettings.activationTuning[stableHandedness][fingertipName]
-                    .pressVelocityThreshold,
-                releaseVelocityThreshold:
-                  liveSettings.activationTuning[stableHandedness][fingertipName]
-                    .releaseVelocityThreshold
-              }
-            });
-
-          activeTouchMarkers.push({
-            handId: hand.id,
-            stableHandedness,
-            tipIndex,
-            source: "piano",
-            modelZ: tip.z,
-            rawDepthScore: depthScore,
-            sensitivity,
-              depthScore: effectiveDepthScore,
-              activationProgress: touchActivation.activation,
-              activationVelocity,
-              isCalibrated: touchActivation.calibrated,
-              isPressed
-            });
-            nextTipIntentMemory[memoryKey] = {
-              timestamp: frame.timestamp,
-              y: tip.y,
-              effectiveDepthScore,
-              activation: touchActivation.activation,
-              activationVelocity,
-              candidateKey,
-              stableMs,
-              pressed: isPressed
-            };
-
-            if (!isPressed) {
-              return;
-            }
-
-            if (blackZone !== null) {
-              directBlackTouches.add(blackZone);
-              return;
-            }
-
-            if (whiteZone === null) {
-              return;
-            }
-
-            groupedWhiteTouches.set(whiteZone, (groupedWhiteTouches.get(whiteZone) ?? 0) + 1);
-          });
-        });
-
-        latestFingerDepthSamplesRef.current = {
-          Left: getCalibrationFingerSamples(nextFingerDepthSamplesByHand, "Left"),
-          Right: getCalibrationFingerSamples(nextFingerDepthSamplesByHand, "Right")
-        };
-        latestWeightedFingerDepthSamplesRef.current = {
-          Left: getCalibrationFingerSamples(nextWeightedFingerDepthSamplesByHand, "Left"),
-          Right: getCalibrationFingerSamples(nextWeightedFingerDepthSamplesByHand, "Right")
-        };
-        latestFingerDepthSampleTimestampsRef.current = {
-          Left: getCalibrationFingerSamples(nextFingerDepthSampleTimestampsByHand, "Left"),
-          Right: getCalibrationFingerSamples(nextFingerDepthSampleTimestampsByHand, "Right")
-        };
-        tipIntentMemoryRef.current = nextTipIntentMemory;
-        latestTouchDepthRef.current = {
-          Left: getCalibrationDepthScore(touchSamples, "Left"),
-          Right: getCalibrationDepthScore(touchSamples, "Right")
-        };
-      } else {
-        latestFingerDepthSamplesRef.current = emptyHandedFingerDepthSamples();
-        latestWeightedFingerDepthSamplesRef.current = emptyHandedFingerDepthSamples();
-        latestFingerDepthSampleTimestampsRef.current = emptyHandedFingerDepthSamples();
-        tipIntentMemoryRef.current = {};
-        latestTouchDepthRef.current = emptyHandedTouchDepthMap();
-      }
-
-      const { activeNaturalZones, activeSharpZones } = shouldRunPianoTouchPipeline
-        ? resolveActiveTouchState(groupedWhiteTouches, directBlackTouches, liveSettings.pianoOctaves)
-        : { activeNaturalZones: [], activeSharpZones: [] };
-      const activeSemitones = shouldRunPianoTouchPipeline
-        ? [
-            ...activeNaturalZones.map((zone) =>
-              naturalZoneToSemitone(zone, false, liveSettings.pianoOctaves)
-            ),
-            ...activeSharpZones.map((zone) =>
-              naturalZoneToSemitone(zone, true, liveSettings.pianoOctaves)
-            )
-          ].sort((left, right) => left - right)
-        : [];
-      const activeMidiNotes = activeSemitones.map((semitone) => getRootMidi(semitone));
-      const activeNoteLabels = activeSemitones.map((semitone) =>
-        describeRootSemitone(semitone, liveSettings.labelStyle)
+      const pianoPlaybackState = derivePianoPlaybackState(
+        shouldRunPianoTouchPipeline,
+        pianoTouchState,
+        liveSettings
       );
-      const circleSegmentSets: Record<Handedness, Set<number>> = {
-        Left: new Set<number>(),
-        Right: new Set<number>()
-      };
-      const activeCircleMarkers: ActiveCircleMarker[] = [];
-      const activeCircleTouchMarkers: ActiveTouchMarker[] = [];
-      const circleRootSemitoneSet = new Set<number>();
-      const circleMidiNoteSet = new Set<number>();
-      const circleChordLabelSet = new Set<string>();
-      const circleNoteLabels: string[] = [];
-
-      if (isCircleMode) {
-        ([
-          ["Left", stableLeftHand],
-          ["Right", stableRightHand]
-        ] as const).forEach(([stableHandedness, hand]) => {
-          if (!hand) {
-            return;
-          }
-
-          const circleLayout = getCircleLayout(stableHandedness);
-          const chordMode = classifyCircleChordQuality(extractHandFeatures(hand.landmarks));
-          const useFifths = liveSettings.circleOfFifths[stableHandedness];
-
-          PLAYABLE_FINGERTIP_INDEXES.forEach((tipIndex) => {
-            const finger = tipIndexToFingerName(tipIndex);
-            if (!liveSettings.circleFingerEnabled[stableHandedness][finger]) {
-              return;
-            }
-
-            const tip = hand.landmarks[tipIndex];
-            const segment = tip ? resolveCircleSegment(tip, circleLayout) : null;
-            if (segment === null) {
-              return;
-            }
-
-            const rootSemitone = getCircleRootSemitone(segment, useFifths);
-            const label = describeChord(rootSemitone, chordMode, liveSettings.labelStyle);
-            const labelSignature = `${rootSemitone}:${chordMode}`;
-            circleSegmentSets[stableHandedness].add(segment);
-            circleRootSemitoneSet.add(rootSemitone);
-            buildVoicing(rootSemitone, chordMode).forEach((midiNote) => {
-              circleMidiNoteSet.add(midiNote);
-            });
-
-            if (!circleChordLabelSet.has(labelSignature)) {
-              circleChordLabelSet.add(labelSignature);
-              circleNoteLabels.push(label);
-            }
-
-            activeCircleMarkers.push({
-              handId: hand.id,
-              stableHandedness,
-              finger,
-              tipIndex,
-              segment,
-              rootSemitone,
-              chordMode,
-              label
-            });
-            activeCircleTouchMarkers.push({
-              handId: hand.id,
-              stableHandedness,
-              tipIndex,
-              source: "circle",
-              modelZ: tip.z,
-              rawDepthScore: 0,
-              sensitivity: 1,
-              depthScore: 0,
-              activationProgress: 1,
-              activationVelocity: 0,
-              isCalibrated: true,
-              isPressed: true
-            });
-          });
-        });
-      }
-
-      const circleRootSemitones = [...circleRootSemitoneSet].sort((left, right) => left - right);
-      const circleMidiNotes = [...circleMidiNoteSet].sort((left, right) => left - right);
-      const circleRootLabels = circleRootSemitones.map((semitone) =>
-        describeRootSemitone(semitone, liveSettings.labelStyle)
-      );
+      const circleModeState = isCircleMode
+        ? runCircleModePipeline(stableLeftHand, stableRightHand, liveSettings)
+        : {
+            activeCircleMarkers: [],
+            activeCircleTouchMarkers: [],
+            circleRootSemitones: [],
+            circleRootMidis: [],
+            circleMidiNotes: [],
+            circleNoteLabels: [],
+            circleRootLabels: [],
+            circleSegmentSets: { Left: new Set<number>(), Right: new Set<number>() }
+          };
       const suppressNormalAudio = calibrationUpdate.session.active;
-      const playableMidiNotes = isCircleMode ? circleMidiNotes : activeMidiNotes;
-      const playableSemitones = isCircleMode ? circleRootSemitones : activeSemitones;
-      const playableNoteLabels = isCircleMode ? circleNoteLabels : activeNoteLabels;
-      const playableRootLabels = isCircleMode ? circleRootLabels : activeNoteLabels;
-      const displayedActiveNaturalZones = suppressNormalAudio || isCircleMode ? [] : activeNaturalZones;
-      const displayedActiveSharpZones = suppressNormalAudio || isCircleMode ? [] : activeSharpZones;
-      const displayedActiveCircleSegments =
-        suppressNormalAudio || !isCircleMode
-          ? { Left: [], Right: [] }
-          : {
-              Left: [...circleSegmentSets.Left],
-              Right: [...circleSegmentSets.Right]
-            };
+      const playableMidiNotes = isCircleMode
+        ? circleModeState.circleMidiNotes
+        : pianoPlaybackState.activeMidiNotes;
+      const playableSemitones = isCircleMode
+        ? circleModeState.circleRootSemitones
+        : pianoPlaybackState.activeSemitones;
+      const playableNoteLabels = isCircleMode
+        ? circleModeState.circleNoteLabels
+        : pianoPlaybackState.activeNoteLabels;
+      const playableRootLabels = isCircleMode
+        ? circleModeState.circleRootLabels
+        : pianoPlaybackState.activeNoteLabels;
+      const displayedActiveNaturalZones =
+        suppressNormalAudio || isCircleMode ? [] : pianoPlaybackState.activeNaturalZones;
+      const displayedActiveSharpZones =
+        suppressNormalAudio || isCircleMode ? [] : pianoPlaybackState.activeSharpZones;
+      const displayedActiveCircleSegments = getDisplayedActiveCircleSegments(
+        suppressNormalAudio,
+        isCircleMode,
+        circleModeState.circleSegmentSets
+      );
       const displayedActiveCircleMarkers =
-        suppressNormalAudio || !isCircleMode ? [] : activeCircleMarkers;
-      const displayedActiveTouchMarkers =
-        suppressNormalAudio
-          ? []
-          : isCircleMode
-            ? activeCircleTouchMarkers
-            : activeTouchMarkers;
+        suppressNormalAudio || !isCircleMode ? [] : circleModeState.activeCircleMarkers;
+      const displayedActiveTouchMarkers = getDisplayedActiveTouchMarkers(
+        suppressNormalAudio,
+        isCircleMode,
+        circleModeState.activeCircleTouchMarkers,
+        pianoTouchState.activeTouchMarkers
+      );
       const displayedActiveSemitones = suppressNormalAudio ? [] : playableSemitones;
       const displayedActiveNoteLabels = suppressNormalAudio ? [] : playableNoteLabels;
       const displayedActiveRootLabels = suppressNormalAudio ? [] : playableRootLabels;
       const normalMidiSignature = suppressNormalAudio ? "" : playableMidiNotes.join(",");
-      const calibrationPreviewMidiSignature =
-        calibrationUpdate.session.active &&
-        calibrationUpdate.session.phase === "preview" &&
-        liveSettings.calibrationAudioMode === "target-preview"
-          ? activeMidiNotes.join(",")
-          : "";
-
-      if (lastMidiSignatureRef.current !== normalMidiSignature) {
-        audioRef.current?.syncMidiNotes(suppressNormalAudio ? [] : playableMidiNotes);
-        lastMidiSignatureRef.current = normalMidiSignature;
-      }
-      if (
-        calibrationPreviewMidiSignature &&
-        lastCalibrationPreviewMidiSignatureRef.current !== calibrationPreviewMidiSignature
-      ) {
-        audioRef.current?.syncCalibrationPreviewNotes(activeMidiNotes, 0.24);
-        lastCalibrationPreviewMidiSignatureRef.current = calibrationPreviewMidiSignature;
-      } else if (!calibrationPreviewMidiSignature && lastCalibrationPreviewMidiSignatureRef.current) {
-        audioRef.current?.stopCalibrationPreview();
-        lastCalibrationPreviewMidiSignatureRef.current = "";
-      }
+      const calibrationPreviewMidiSignature = getCalibrationPreviewMidiSignature(
+        calibrationUpdate.session,
+        liveSettings.calibrationAudioMode,
+        pianoPlaybackState.activeMidiNotes
+      );
+      syncPlaybackAudio({
+        audioRef,
+        lastMidiSignatureRef,
+        lastCalibrationPreviewMidiSignatureRef,
+        suppressNormalAudio,
+        playableMidiNotes,
+        normalMidiSignature,
+        calibrationPreviewMidiSignature,
+        activeMidiNotes: pianoPlaybackState.activeMidiNotes
+      });
 
       const previous = interactionRef.current;
-      const nextInteraction: InteractionState = {
-        ...previous,
-        systemState:
-          trackedHands.length === 0
-            ? "TRACKING_SEARCH"
-            : displayedActiveSemitones.length > 0
-              ? "PLAYING"
-              : "TRACKING_ACTIVE",
-        stableMode: "single",
-        currentZone: displayedActiveNaturalZones[0] ?? displayedActiveSharpZones[0] ?? null,
-        currentRoot: displayedActiveSemitones[0] ?? null,
-        currentRootSince: displayedActiveSemitones.length > 0 ? frame.timestamp : null,
-        lastTriggeredRoot: displayedActiveSemitones[0] ?? null,
-        lastTriggerAt: displayedActiveSemitones.length > 0 ? frame.timestamp : previous.lastTriggerAt,
-        lastNoteVisibleAt: trackedHands.length > 0 ? frame.timestamp : previous.lastNoteVisibleAt,
-        lastChordVisibleAt: null,
-        chordCandidateMode: null,
-        chordCandidateSince: null,
-        ambiguousSince: null,
-        notePinchActive: false,
-        isSounding: displayedActiveSemitones.length > 0,
-        warnings: []
-      };
+      const nextInteraction = buildDisplayInteractionState({
+        previous,
+        trackedHandsCount: trackedHands.length,
+        displayedActiveNaturalZones,
+        displayedActiveSharpZones,
+        displayedActiveSemitones,
+        timestamp: frame.timestamp
+      });
       interactionRef.current = nextInteraction;
 
-      let logCount = logCountRef.current;
-      if (nextInteraction.currentZone !== previous.currentZone && nextInteraction.currentZone !== null) {
-        logCount = appendLog(loggerRef.current, {
-          type: "note-zone",
-          timestamp: frame.timestamp,
-          payload: { zone: nextInteraction.currentZone }
-        });
-      }
-
-      const displayedAudioSignature = [
-        liveSettings.playMode,
-        displayedActiveSemitones.join(","),
-        displayedActiveNoteLabels.join(","),
-        normalMidiSignature
-      ].join("|");
-      if (displayedAudioSignature !== lastLoggedSemitoneSignatureRef.current) {
-        logCount = appendLog(loggerRef.current, {
-          type: "audio-event",
-          timestamp: frame.timestamp,
-          payload: {
-            playMode: liveSettings.playMode,
-            activeSemitones: displayedActiveSemitones,
-            activeMidiNotes: suppressNormalAudio ? [] : playableMidiNotes,
-            activeLabels: displayedActiveNoteLabels
-          }
-        });
-        lastLoggedSemitoneSignatureRef.current = displayedAudioSignature;
-      }
-
-      if (
-        trackedHands.length === 0 &&
-        frame.timestamp - lastTrackingDropLogAtRef.current >= TRACKING_DROP_LOG_INTERVAL_MS
-      ) {
-        logCount = appendLog(loggerRef.current, {
-          type: "tracking-drop",
-          timestamp: frame.timestamp,
-          payload: { reason: "no-hands-visible" }
-        });
-        lastTrackingDropLogAtRef.current = frame.timestamp;
-      }
+      const { logCount, displayedAudioSignature } = appendFrameLogs({
+        previous,
+        nextInteraction,
+        timestamp: frame.timestamp,
+        playMode: liveSettings.playMode,
+        displayedActiveSemitones,
+        displayedActiveNoteLabels,
+        suppressNormalAudio,
+        playableMidiNotes,
+        trackedHandsCount: trackedHands.length,
+        loggerRef,
+        lastLoggedSemitoneSignatureRef,
+        lastTrackingDropLogAtRef,
+        currentLogCount: logCountRef.current
+      });
       logCountRef.current = logCount;
 
-      const currentRootLabel =
-        displayedActiveSemitones.length > 0
-          ? displayedActiveRootLabels.join(" • ")
-          : smoothedNoteX !== null && displayedActiveNaturalZones[0] !== undefined
-            ? describeRootSemitone(
-                naturalZoneToSemitone(displayedActiveNaturalZones[0], false, liveSettings.pianoOctaves),
-                liveSettings.labelStyle
-              )
-            : null;
-      const currentChordLabel =
-        displayedActiveNoteLabels.length > 0
-          ? displayedActiveNoteLabels.join(" • ")
-          : isCircleMode
-            ? "Circle ready"
-            : "Waiting for touch";
-      let focusTouchMarker: ActiveTouchMarker | null = null;
-      for (const marker of displayedActiveTouchMarkers) {
-        if (
-          !focusTouchMarker ||
-          Number(marker.isPressed) > Number(focusTouchMarker.isPressed) ||
-          (marker.isPressed === focusTouchMarker.isPressed &&
-            marker.depthScore > focusTouchMarker.depthScore)
-        ) {
-          focusTouchMarker = marker;
-        }
-      }
-      const focusHand = focusTouchMarker
-        ? trackedHands.find((hand) => hand.id === focusTouchMarker.handId) ?? null
-        : primaryHand;
-      const focusLandmark =
-        focusTouchMarker && focusHand
-          ? focusHand.landmarks[focusTouchMarker.tipIndex]
-          : primaryHand?.landmarks[8] ?? null;
-      const focusTipLabel =
-        focusTouchMarker !== null
-          ? `${focusTouchMarker.stableHandedness.toLowerCase()} ${tipIndexToFingerName(focusTouchMarker.tipIndex)}`
-          : primaryHand
-            ? "primary index"
-            : null;
+      const currentRootLabel = resolveCurrentRootLabel(
+        displayedActiveSemitones,
+        displayedActiveRootLabels,
+        smoothedNoteX,
+        displayedActiveNaturalZones,
+        liveSettings.labelStyle,
+        liveSettings.pianoOctaves
+      );
+      const currentChordLabel = resolveCurrentChordLabel(
+        displayedActiveNoteLabels,
+        isCircleMode
+      );
+      const focusTouchMarker = findFocusTouchMarker(displayedActiveTouchMarkers);
+      const focusHand = resolveFocusHand(focusTouchMarker, trackedHands, primaryHand);
+      const focusLandmark = resolveFocusLandmark(focusTouchMarker, focusHand, primaryHand);
+      const focusTipLabel = resolveFocusTipLabel(focusTouchMarker, primaryHand);
       const focusTipRawX = focusLandmark?.x ?? null;
       const focusTipProjectedX =
         focusLandmark
@@ -1384,12 +1901,12 @@ export function useGestureInstrument(): {
               liveSettings.pianoWidthScale
             )
           : null;
-      let touchTips = isCircleMode ? displayedActiveCircleMarkers.length : directBlackTouches.size;
-      if (!isCircleMode) {
-        groupedWhiteTouches.forEach((count) => {
-          touchTips += count;
-        });
-      }
+      const touchTips = countTouchTips(
+        isCircleMode,
+        displayedActiveCircleMarkers,
+        pianoTouchState.directBlackTouches,
+        pianoTouchState.groupedWhiteTouches
+      );
       const renderSignature = [
         liveSettings.playMode,
         displayedAudioSignature,
@@ -1406,18 +1923,13 @@ export function useGestureInstrument(): {
         startupNotice ?? "",
         audioOutputNotice ?? ""
       ].join("|");
-      const shouldPublishRender =
-        renderSignature !== lastRenderSignatureRef.current ||
-        frame.timestamp - lastRenderStateAtRef.current >= RENDER_FRAME_INTERVAL_MS;
-
-      if (!shouldPublishRender) {
-        return;
-      }
-
-      lastRenderSignatureRef.current = renderSignature;
-      lastRenderStateAtRef.current = frame.timestamp;
-
-      setRenderState({
+      publishRenderStateIfNeeded({
+        renderSignature,
+        frameTimestamp: frame.timestamp,
+        lastRenderSignatureRef,
+        lastRenderStateAtRef,
+        setRenderState,
+        nextState: {
         trackerStatus: "ready",
         error: null,
         armed,
@@ -1464,6 +1976,7 @@ export function useGestureInstrument(): {
         activeCircleSegments: displayedActiveCircleSegments,
         activeCircleMarkers: displayedActiveCircleMarkers,
         calibrationSession: calibrationUpdate.session
+        }
       });
     },
     [

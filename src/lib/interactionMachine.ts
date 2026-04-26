@@ -90,6 +90,96 @@ function shouldStopForMissingNote(
   return timestamp - state.lastNoteVisibleAt > options.noteLossMs && state.isSounding;
 }
 
+function createNextInteractionState(
+  state: InteractionState,
+  frame: InteractionFrame,
+  noteVisible: boolean,
+  chordVisible: boolean
+): InteractionState {
+  return {
+    ...state,
+    systemState: noteVisible || chordVisible ? "TRACKING_ACTIVE" : "TRACKING_SEARCH",
+    warnings: [],
+    lastNoteVisibleAt: noteVisible ? frame.timestamp : state.lastNoteVisibleAt,
+    lastChordVisibleAt: chordVisible ? frame.timestamp : state.lastChordVisibleAt,
+    notePinchActive: frame.notePinch
+  };
+}
+
+function updateRootTracking(
+  state: InteractionState,
+  nextState: InteractionState,
+  frame: InteractionFrame
+): void {
+  const resolvedNoteX = frame.noteX ?? 0;
+  const zone = resolveNoteZone(resolvedNoteX, state.currentZone);
+  const zoneChanged = zone !== state.currentZone;
+
+  if (zoneChanged) {
+    nextState.currentZone = zone;
+    nextState.currentRoot = zone;
+    nextState.currentRootSince = frame.timestamp;
+    return;
+  }
+
+  nextState.currentZone = state.currentZone;
+  nextState.currentRoot = state.currentRoot ?? zone;
+  nextState.currentRootSince = state.currentRootSince ?? frame.timestamp;
+}
+
+function shouldTriggerZonePlayback(
+  state: InteractionState,
+  nextState: InteractionState,
+  frame: InteractionFrame,
+  options: InteractionOptions
+): { shouldTrigger: boolean; cooldownElapsed: boolean; modeChangedWhileHolding: boolean } {
+  const hasRoot = nextState.currentRoot !== null;
+  const modeChangedWhileHolding = hasRoot && nextState.isSounding && nextState.stableMode !== state.stableMode;
+  const zoneReady =
+    hasRoot &&
+    nextState.currentRootSince !== null &&
+    frame.timestamp - nextState.currentRootSince >= options.dwellMs;
+  const cooldownElapsed = frame.timestamp - state.lastTriggerAt >= options.cooldownMs;
+  const pinchEdge = frame.notePinch && !state.notePinchActive;
+  const rootChanged = nextState.currentRoot !== state.lastTriggeredRoot;
+  const shouldTriggerForZoneChange = zoneReady && cooldownElapsed && (rootChanged || modeChangedWhileHolding);
+
+  if (options.triggerMode !== "hover") {
+    return {
+      shouldTrigger: shouldTriggerForZoneChange && pinchEdge,
+      cooldownElapsed,
+      modeChangedWhileHolding
+    };
+  }
+
+  return {
+    shouldTrigger: shouldTriggerForZoneChange,
+    cooldownElapsed,
+    modeChangedWhileHolding
+  };
+}
+
+function pushPlayEvent(
+  events: AudioEvent[],
+  nextState: InteractionState,
+  timestamp: number
+): void {
+  if (nextState.currentRoot === null) {
+    return;
+  }
+
+  nextState.isSounding = true;
+  nextState.systemState = "PLAYING";
+  nextState.lastTriggerAt = timestamp;
+  nextState.lastTriggeredRoot = nextState.currentRoot;
+  events.push({
+    kind: "play",
+    rootIndex: nextState.currentRoot,
+    mode: nextState.stableMode,
+    timestamp
+  });
+}
+
 function resolveMode(
   state: InteractionState,
   frame: InteractionFrame,
@@ -200,14 +290,7 @@ export function updateInteractionState(
   const noteVisible = frame.noteConfidence >= TRACKING_THRESHOLDS.noteConfidence && frame.noteX !== null;
   const chordVisible =
     frame.chordConfidence >= TRACKING_THRESHOLDS.chordConfidence && frame.chordGesture !== null;
-  const nextState: InteractionState = {
-    ...state,
-    systemState: noteVisible || chordVisible ? "TRACKING_ACTIVE" : "TRACKING_SEARCH",
-    warnings: [],
-    lastNoteVisibleAt: noteVisible ? frame.timestamp : state.lastNoteVisibleAt,
-    lastChordVisibleAt: chordVisible ? frame.timestamp : state.lastChordVisibleAt,
-    notePinchActive: frame.notePinch
-  };
+  const nextState = createNextInteractionState(state, frame, noteVisible, chordVisible);
 
   const modeState = resolveMode(nextState, frame, options);
   nextState.stableMode = modeState.stableMode;
@@ -235,55 +318,15 @@ export function updateInteractionState(
     return { state: nextState, events };
   }
 
-  const zone = resolveNoteZone(frame.noteX ?? 0, state.currentZone);
-  if (zone !== state.currentZone) {
-    nextState.currentZone = zone;
-    nextState.currentRoot = zone;
-    nextState.currentRootSince = frame.timestamp;
-  } else {
-    nextState.currentZone = state.currentZone;
-    nextState.currentRoot = state.currentRoot ?? zone;
-    nextState.currentRootSince = state.currentRootSince ?? frame.timestamp;
+  updateRootTracking(state, nextState, frame);
+  const playbackState = shouldTriggerZonePlayback(state, nextState, frame, options);
+
+  if (playbackState.shouldTrigger) {
+    pushPlayEvent(events, nextState, frame.timestamp);
   }
 
-  const modeChangedWhileHolding =
-    nextState.isSounding && nextState.currentRoot !== null && nextState.stableMode !== state.stableMode;
-  const zoneReady =
-    nextState.currentRoot !== null &&
-    nextState.currentRootSince !== null &&
-    frame.timestamp - nextState.currentRootSince >= options.dwellMs;
-  const cooldownElapsed = frame.timestamp - state.lastTriggerAt >= options.cooldownMs;
-  const pinchEdge = frame.notePinch && !state.notePinchActive;
-  const shouldTriggerForZoneChange =
-    zoneReady &&
-    cooldownElapsed &&
-    (nextState.currentRoot !== state.lastTriggeredRoot || modeChangedWhileHolding);
-  const shouldTrigger =
-    options.triggerMode === "hover" ? shouldTriggerForZoneChange : shouldTriggerForZoneChange && pinchEdge;
-
-  if (shouldTrigger && nextState.currentRoot !== null) {
-    nextState.isSounding = true;
-    nextState.systemState = "PLAYING";
-    nextState.lastTriggerAt = frame.timestamp;
-    nextState.lastTriggeredRoot = nextState.currentRoot;
-    events.push({
-      kind: "play",
-      rootIndex: nextState.currentRoot,
-      mode: nextState.stableMode,
-      timestamp: frame.timestamp
-    });
-  }
-
-  if (modeChangedWhileHolding && cooldownElapsed && nextState.currentRoot !== null) {
-    nextState.isSounding = true;
-    nextState.systemState = "PLAYING";
-    nextState.lastTriggerAt = frame.timestamp;
-    events.push({
-      kind: "play",
-      rootIndex: nextState.currentRoot,
-      mode: nextState.stableMode,
-      timestamp: frame.timestamp
-    });
+  if (playbackState.modeChangedWhileHolding && playbackState.cooldownElapsed) {
+    pushPlayEvent(events, nextState, frame.timestamp);
   }
 
   return { state: nextState, events };

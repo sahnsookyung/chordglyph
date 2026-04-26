@@ -41,6 +41,10 @@ export const NOTE_NAMES_FLATS = [
 export const MIN_PIANO_OCTAVES = 1;
 export const MAX_PIANO_OCTAVES = 6;
 export const DEFAULT_PIANO_OCTAVES = 4;
+export const MIN_CIRCLE_NOTE_OCTAVE = 1;
+export const MAX_CIRCLE_NOTE_OCTAVE = 7;
+export const MIN_CIRCLE_OPEN_OCTAVE_SHIFT = -2;
+export const MAX_CIRCLE_OPEN_OCTAVE_SHIFT = 2;
 
 export const NATURAL_OCTAVE = ["C", "D", "E", "F", "G", "A", "B"] as const;
 export const NATURAL_OCTAVE_SEMITONES = [0, 2, 4, 5, 7, 9, 11] as const;
@@ -56,9 +60,10 @@ export const NATURAL_NOTE_TO_SEMITONE = [
   ).flat(),
   DEFAULT_PIANO_OCTAVES * 12
 ] as const;
-export const SHARP_CAPABLE_NATURAL_INDEXES = Array.from({ length: DEFAULT_PIANO_OCTAVES }, (_, octave) =>
-  SHARP_CAPABLE_OFFSETS.map((offset) => offset + octave * 7)
-).flat() as number[];
+export const SHARP_CAPABLE_NATURAL_INDEXES: number[] = Array.from(
+  { length: DEFAULT_PIANO_OCTAVES },
+  (_, octave) => SHARP_CAPABLE_OFFSETS.map((offset) => offset + octave * 7)
+).flat();
 
 export const NOTE_COUNT = VISIBLE_NATURAL_NOTE_NAMES.length;
 
@@ -76,6 +81,27 @@ export const DEFAULT_CIRCLE_FINGER_ENABLED = {
     middle: false,
     ring: false,
     pinky: false
+  }
+} as const;
+
+export const DEFAULT_CIRCLE_NOTE_OCTAVES = {
+  Left: {
+    C: 3,
+    D: 3,
+    E: 3,
+    F: 3,
+    G: 3,
+    A: 3,
+    B: 3
+  },
+  Right: {
+    C: 4,
+    D: 4,
+    E: 4,
+    F: 4,
+    G: 4,
+    A: 4,
+    B: 4
   }
 } as const;
 
@@ -115,6 +141,14 @@ export const DEFAULT_SETTINGS: InstrumentSettings = {
   circleOfFifths: {
     Left: false,
     Right: false
+  },
+  circleNoteOctaves: {
+    Left: { ...DEFAULT_CIRCLE_NOTE_OCTAVES.Left },
+    Right: { ...DEFAULT_CIRCLE_NOTE_OCTAVES.Right }
+  },
+  circleOpenOctaveShift: {
+    Left: 1,
+    Right: 1
   },
   deviceId: "",
   audioOutputDeviceId: "",

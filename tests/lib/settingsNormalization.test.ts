@@ -1,5 +1,5 @@
-import { DEFAULT_SETTINGS } from "./constants";
-import { normalizeInstrumentSettings } from "./settingsNormalization";
+import { DEFAULT_SETTINGS } from "../../src/lib/constants";
+import { normalizeInstrumentSettings } from "../../src/lib/settingsNormalization";
 
 describe("normalizeInstrumentSettings", () => {
   it("keeps supported settings and drops stale intent fields", () => {
@@ -77,6 +77,11 @@ describe("normalizeInstrumentSettings", () => {
       playMode: "grid",
       showFingertipStats: "no",
       circleOfFifths: { Left: true, Right: "yes" },
+      circleOpenOctaveShift: { Left: 4, Right: -7 },
+      circleNoteOctaves: {
+        Left: { C: 9, D: 0, E: 3 },
+        Right: { G: 5 }
+      },
       circleFingerEnabled: {
         Left: { thumb: true, index: false, middle: true, ring: "nope" }
       },
@@ -95,6 +100,12 @@ describe("normalizeInstrumentSettings", () => {
     expect(normalized.circleFingerEnabled.Left.middle).toBe(true);
     expect(normalized.circleFingerEnabled.Left.ring).toBe(false);
     expect(normalized.circleFingerEnabled.Right.index).toBe(true);
+    expect(normalized.circleNoteOctaves.Left.C).toBe(7);
+    expect(normalized.circleNoteOctaves.Left.D).toBe(1);
+    expect(normalized.circleNoteOctaves.Left.E).toBe(3);
+    expect(normalized.circleNoteOctaves.Right.G).toBe(5);
+    expect(normalized.circleOpenOctaveShift.Left).toBe(2);
+    expect(normalized.circleOpenOctaveShift.Right).toBe(-2);
     expect(normalized.trackingBackend).toBe(DEFAULT_SETTINGS.trackingBackend);
     expect(normalized.audioOutputDeviceId).toBe(DEFAULT_SETTINGS.audioOutputDeviceId);
   });

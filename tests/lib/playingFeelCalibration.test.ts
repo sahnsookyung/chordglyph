@@ -1,7 +1,7 @@
 import {
   CALIBRATION_STABILITY_THRESHOLDS,
   CONTROL_GESTURE_THRESHOLDS
-} from "./constants";
+} from "../../src/lib/constants";
 import {
   acceptPlayingFeelCalibration,
   getCalibrationAcceptedControlZones,
@@ -13,7 +13,7 @@ import {
   updatePlayingFeelCalibrationSession,
   type CalibrationFrameSample,
   type PlayingFeelCalibrationSession
-} from "./playingFeelCalibration";
+} from "../../src/lib/playingFeelCalibration";
 
 function sample(timestamp: number, weightedDepth: number): CalibrationFrameSample {
   return {

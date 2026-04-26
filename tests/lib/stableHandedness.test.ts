@@ -2,8 +2,8 @@ import {
   emptyStableHandSlots,
   resolveStableHandedness,
   type StableHandSlots
-} from "./stableHandedness";
-import type { TrackedHand } from "./types";
+} from "../../src/lib/stableHandedness";
+import type { TrackedHand } from "../../src/lib/types";
 
 function makeHand(id: string, handedness: "Left" | "Right", avgX: number): TrackedHand {
   return {

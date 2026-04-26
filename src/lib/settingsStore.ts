@@ -38,7 +38,7 @@ export async function loadInstrumentSettings(): Promise<InstrumentSettings | nul
 
     request.onerror = () => reject(request.error ?? new Error("Unable to read saved settings"));
     request.onsuccess = () => {
-      const persisted = request.result;
+      const persisted: unknown = request.result;
       if (!persisted || typeof persisted !== "object") {
         resolve(null);
         return;

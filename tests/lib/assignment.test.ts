@@ -1,5 +1,5 @@
-import { assignHands } from "./assignment";
-import type { TrackedHand } from "./types";
+import { assignHands } from "../../src/lib/assignment";
+import type { TrackedHand } from "../../src/lib/types";
 
 function makeHand(id: string, handedness: "Left" | "Right", centerX: number): TrackedHand {
   return {

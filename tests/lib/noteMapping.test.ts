@@ -1,4 +1,4 @@
-import { buildArcLayout, getStripBounds, projectToNoteStripX, resolveNoteZone } from "./noteMapping";
+import { buildArcLayout, getStripBounds, projectToNoteStripX, resolveNoteZone } from "../../src/lib/noteMapping";
 
 describe("resolveNoteZone", () => {
   it("maps positions into 29 note zones", () => {

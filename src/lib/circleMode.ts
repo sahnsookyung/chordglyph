@@ -1,5 +1,5 @@
 import { NATURAL_OCTAVE, NATURAL_OCTAVE_SEMITONES } from "./constants";
-import type { ChordMode, HandFeatures, Handedness, Landmark } from "./types";
+import type { ChordMode, CircleNoteName, HandFeatures, Handedness, Landmark } from "./types";
 
 export const CIRCLE_STAGE_ASPECT_RATIO = 16 / 10;
 export const CIRCLE_RADIUS_Y = 0.28;
@@ -12,6 +12,7 @@ export const CIRCLE_NOTE_ORDERS = {
 } as const;
 
 type CircleNoteLabel = (typeof NATURAL_OCTAVE)[number];
+const CIRCLE_OPEN_HAND_THRESHOLD = 0.68;
 
 const CIRCLE_CENTERS: Record<Handedness, { x: number; y: number }> = {
   Left: { x: 0.28, y: 0.56 },
@@ -54,6 +55,11 @@ export function getCircleNoteOrder(useFifths: boolean): readonly CircleNoteLabel
   return useFifths ? CIRCLE_NOTE_ORDERS.fifths : CIRCLE_NOTE_ORDERS.natural;
 }
 
+export function getCircleRootLabel(segment: number, useFifths: boolean): CircleNoteName {
+  const order = getCircleNoteOrder(useFifths);
+  return order[((segment % CIRCLE_NOTE_COUNT) + CIRCLE_NOTE_COUNT) % CIRCLE_NOTE_COUNT];
+}
+
 export function getCircleSegmentLabels(
   hand: Handedness,
   useFifths: boolean
@@ -91,9 +97,16 @@ export function resolveCircleSegment(point: Pick<Landmark, "x" | "y">, layout: C
 }
 
 export function getCircleRootSemitone(segment: number, useFifths: boolean): number {
-  const order = getCircleNoteOrder(useFifths);
-  const label = order[((segment % CIRCLE_NOTE_COUNT) + CIRCLE_NOTE_COUNT) % CIRCLE_NOTE_COUNT];
+  const label = getCircleRootLabel(segment, useFifths);
   return NATURAL_NOTE_TO_SEMITONE.get(label) ?? 0;
+}
+
+export function shouldUseCircleChordVoicing(enabledFingerCount: number): boolean {
+  return enabledFingerCount <= 1;
+}
+
+export function getCircleOctaveShiftForPose(features: HandFeatures, openHandShift: number): number {
+  return features.openness >= CIRCLE_OPEN_HAND_THRESHOLD ? openHandShift : 0;
 }
 
 export function classifyCircleChordQuality(features: HandFeatures): ChordMode {

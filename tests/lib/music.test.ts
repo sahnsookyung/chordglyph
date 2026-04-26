@@ -1,13 +1,17 @@
 import {
   buildVoicing,
+  buildVoicingFromMidiRoot,
+  describeMidiChord,
+  describeMidiNote,
   describeChord,
   describeRootSemitone,
+  getMidiForSemitoneOctave,
   getNaturalKeyCount,
   getVisibleBlackKeys,
   getVisibleKeyNames,
   naturalZoneSupportsSharp,
   naturalZoneToSemitone
-} from "./music";
+} from "../../src/lib/music";
 
 describe("music helpers", () => {
   it("builds major voicings from the root", () => {
@@ -16,6 +20,7 @@ describe("music helpers", () => {
     expect(buildVoicing(2, "diminished")).toEqual([62, 65, 68]);
     expect(buildVoicing(5, "major7")).toEqual([65, 69, 72, 76]);
     expect(buildVoicing(7, "minor7")).toEqual([67, 70, 74, 77]);
+    expect(buildVoicingFromMidiRoot(48, "major")).toEqual([48, 52, 55]);
   });
 
   it("formats chord labels with sharps or flats", () => {
@@ -24,6 +29,14 @@ describe("music helpers", () => {
     expect(describeChord(2, "diminished", "sharps")).toBe("D dim");
     expect(describeChord(4, "major7", "sharps")).toBe("Emaj7");
     expect(describeChord(3, "minor7", "flats")).toBe("Ebm7");
+    expect(describeMidiNote(48, "sharps")).toBe("C3");
+    expect(describeMidiChord(49, "single", "flats")).toBe("Db3");
+  });
+
+  it("maps semitones into explicit octaves", () => {
+    expect(getMidiForSemitoneOctave(0, 3)).toBe(48);
+    expect(getMidiForSemitoneOctave(7, 4)).toBe(67);
+    expect(getMidiForSemitoneOctave(14, 3)).toBe(62);
   });
 
   it("maps natural keys and two-finger sharps to semitone roots", () => {

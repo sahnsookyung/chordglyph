@@ -1,4 +1,4 @@
-import { resolveNoteZone } from "./noteMapping";
+import { resolveNoteZone } from "../../src/lib/noteMapping";
 import {
   getWhiteHitSegments,
   getPianoLayout,
@@ -8,7 +8,7 @@ import {
   resolveActiveTouchState,
   resolveBlackKeyHit,
   resolveWhiteKeyHit
-} from "./pianoLayout";
+} from "../../src/lib/pianoLayout";
 
 describe("pianoLayout helpers", () => {
   it("uses the expected playable fingertip landmarks", () => {

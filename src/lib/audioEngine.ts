@@ -33,6 +33,27 @@ const PATCHES = {
   }
 } as const;
 
+const CALIBRATION_CUE_MIDI = {
+  complete: 84,
+  pause: 62,
+  retry: 67,
+  success: 76
+} as const;
+
+const CALIBRATION_CUE_DURATION = {
+  complete: 0.18,
+  pause: 0.1,
+  retry: 0.1,
+  success: 0.1
+} as const;
+
+const CALIBRATION_CUE_VELOCITY = {
+  complete: 0.3,
+  pause: 0.3,
+  retry: 0.24,
+  success: 0.3
+} as const;
+
 export class AudioEngine {
   private tone: ToneModule | null = null;
   private toneAudioContext: AudioContext | null = null;
@@ -92,7 +113,7 @@ export class AudioEngine {
     this.currentNotes = [];
     this.calibrationPreviewNotes = [];
     this.synth = new Tone.PolySynth(Tone.Synth).connect(this.getVolume(Tone));
-    this.synth.set(PATCHES[patch] as never);
+    this.synth.set(PATCHES[patch]);
   }
 
   setVolume(gainDb: number): void {
@@ -241,9 +262,11 @@ export class AudioEngine {
   }
 
   triggerCalibrationCue(kind: "success" | "retry" | "complete" | "pause"): void {
-    const cueMidi = kind === "retry" ? 67 : kind === "pause" ? 62 : kind === "complete" ? 84 : 76;
-    const duration = kind === "complete" ? 0.18 : 0.1;
-    this.triggerCalibrationTone(cueMidi, duration, kind === "retry" ? 0.24 : 0.3);
+    this.triggerCalibrationTone(
+      CALIBRATION_CUE_MIDI[kind],
+      CALIBRATION_CUE_DURATION[kind],
+      CALIBRATION_CUE_VELOCITY[kind]
+    );
   }
 
   stopAll(): void {
@@ -256,7 +279,9 @@ export class AudioEngine {
     this.stopAll();
     this.explicitOutputElement?.pause();
     this.explicitOutputElement?.removeAttribute("src");
-    this.explicitOutputElement && (this.explicitOutputElement.srcObject = null);
+    if (this.explicitOutputElement) {
+      this.explicitOutputElement.srcObject = null;
+    }
     this.synth?.dispose();
     this.volume?.dispose();
   }
@@ -275,10 +300,7 @@ export class AudioEngine {
   }
 
   private getVolume(Tone: ToneModule): ToneTypes.Volume {
-    if (!this.volume) {
-      this.volume = new Tone.Volume(this.volumeDb);
-    }
-
+    this.volume ??= new Tone.Volume(this.volumeDb);
     return this.volume;
   }
 

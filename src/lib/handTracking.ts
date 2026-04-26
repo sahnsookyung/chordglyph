@@ -1,59 +1,15 @@
-import {
-  FilesetResolver,
-  HandLandmarker,
-  type HandLandmarkerResult
-} from "@mediapipe/tasks-vision";
+import { HandLandmarker } from "@mediapipe/tasks-vision";
 import type { HandTrackerBackend } from "./trackerBackend";
-import { mirrorLandmarkForDisplay, normalizeHandedness } from "./trackerNormalization";
-import type { TrackerFrame, TrackedHand } from "./types";
-
-const WASM_ROOT =
-  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm";
-const MODEL_ASSET =
-  "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
-const TARGET_FRAME_INTERVAL_MS = 1000 / 30;
-
-type VideoFrameCallbackHandle = number;
-type VideoFrameCallbackMetadata = { mediaTime: number };
-type VideoElementWithFrameCallback = HTMLVideoElement & {
-  requestVideoFrameCallback?: (
-    callback: (now: number, metadata: VideoFrameCallbackMetadata) => void
-  ) => VideoFrameCallbackHandle;
-  cancelVideoFrameCallback?: (handle: VideoFrameCallbackHandle) => void;
-};
-
-type WorkerRequest =
-  | { kind: "init"; requestId: number }
-  | { kind: "detect"; requestId: number; frame: ImageBitmap; timestamp: number };
-
-type WorkerResponse =
-  | { kind: "ready"; requestId: number }
-  | {
-      kind: "result";
-      requestId: number;
-      hands: TrackedHand[];
-      timestamp: number;
-      latencyMs: number;
-    }
-  | { kind: "error"; requestId: number; message: string };
-
-function toTrackedHands(result: HandLandmarkerResult): TrackedHand[] {
-  return result.landmarks.map((landmarks, index) => {
-    const handedness = normalizeHandedness(result.handednesses[index]?.[0]?.categoryName);
-    return {
-      id: `${handedness}-${index}`,
-      handedness,
-      confidence: result.handednesses[index]?.[0]?.score ?? 0,
-      landmarks: landmarks.map((point) =>
-        mirrorLandmarkForDisplay({
-          x: point.x,
-          y: point.y,
-          z: point.z
-        })
-      )
-    };
-  });
-}
+import {
+  attachHandTrackingCamera,
+  createHandLandmarker,
+  TARGET_FRAME_INTERVAL_MS,
+  toTrackedHands,
+  type VideoElementWithFrameCallback,
+  type WorkerRequest,
+  type WorkerResponse
+} from "./handTrackingShared";
+import type { TrackerFrame } from "./types";
 
 export class MediaPipeHandTrackerBackend implements HandTrackerBackend {
   readonly kind = "mediapipe-hands" as const;
@@ -70,33 +26,11 @@ export class MediaPipeHandTrackerBackend implements HandTrackerBackend {
       return;
     }
 
-    const vision = await FilesetResolver.forVisionTasks(WASM_ROOT);
-    this.landmarker = await HandLandmarker.createFromOptions(vision, {
-      baseOptions: {
-        modelAssetPath: MODEL_ASSET
-      },
-      runningMode: "VIDEO",
-      numHands: 2,
-      minHandDetectionConfidence: 0.45,
-      minHandPresenceConfidence: 0.45,
-      minTrackingConfidence: 0.45
-    });
+    this.landmarker = await createHandLandmarker();
   }
 
   async attachCamera(video: HTMLVideoElement, deviceId: string): Promise<MediaStream> {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: {
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
-        frameRate: { ideal: 30, min: 24 },
-        ...(deviceId ? { deviceId: { exact: deviceId } } : {})
-      }
-    });
-
-    video.srcObject = stream;
-    await video.play();
-    return stream;
+    return await attachHandTrackingCamera(video, deviceId);
   }
 
   start(video: HTMLVideoElement, onFrame: (frame: TrackerFrame) => void): void {
@@ -104,6 +38,9 @@ export class MediaPipeHandTrackerBackend implements HandTrackerBackend {
       throw new Error("Hand tracker has not been initialized");
     }
     const videoWithFrameCallback = video as VideoElementWithFrameCallback;
+    this.lastVideoTime = -1;
+    this.lastFrameTimestamp = performance.now();
+    this.lastProcessedAt = 0;
     this.activeVideo = videoWithFrameCallback;
 
     const processFrame = (callbackTimestamp: number) => {
@@ -116,27 +53,30 @@ export class MediaPipeHandTrackerBackend implements HandTrackerBackend {
         return;
       }
 
-      const fps = 1000 / Math.max(now - this.lastFrameTimestamp, 1);
       this.lastVideoTime = video.currentTime;
-      this.lastFrameTimestamp = now;
       this.lastProcessedAt = now;
       const detectStartedAt = performance.now();
       const result = this.landmarker?.detectForVideo(video, callbackTimestamp);
       if (!result) {
         return;
       }
+      const latencyMs = performance.now() - detectStartedAt;
+      const nextTimestamp = performance.now();
+      const fps = 1000 / Math.max(nextTimestamp - this.lastFrameTimestamp, 1);
+      this.lastFrameTimestamp = nextTimestamp;
       onFrame({
         hands: toTrackedHands(result),
-        timestamp: now,
+        timestamp: nextTimestamp,
         fps,
-        latencyMs: performance.now() - detectStartedAt
+        latencyMs
       });
     };
 
     if (videoWithFrameCallback.requestVideoFrameCallback) {
       const loop = (now: number) => {
         processFrame(now);
-        this.videoFrameCallbackId = videoWithFrameCallback.requestVideoFrameCallback?.(loop) ?? 0;
+        const scheduleNextFrame = videoWithFrameCallback.requestVideoFrameCallback;
+        this.videoFrameCallbackId = scheduleNextFrame ? scheduleNextFrame(loop) : 0;
       };
 
       this.videoFrameCallbackId = videoWithFrameCallback.requestVideoFrameCallback(loop);
@@ -156,6 +96,8 @@ export class MediaPipeHandTrackerBackend implements HandTrackerBackend {
     this.activeVideo?.cancelVideoFrameCallback?.(this.videoFrameCallbackId);
     this.videoFrameCallbackId = 0;
     this.activeVideo = null;
+    this.lastVideoTime = -1;
+    this.lastProcessedAt = 0;
     stream?.getTracks().forEach((track) => track.stop());
   }
 }
@@ -225,19 +167,7 @@ export class MediaPipeWorkerHandTrackerBackend implements HandTrackerBackend {
   }
 
   async attachCamera(video: HTMLVideoElement, deviceId: string): Promise<MediaStream> {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: {
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
-        frameRate: { ideal: 30, min: 24 },
-        ...(deviceId ? { deviceId: { exact: deviceId } } : {})
-      }
-    });
-
-    video.srcObject = stream;
-    await video.play();
-    return stream;
+    return await attachHandTrackingCamera(video, deviceId);
   }
 
   start(video: HTMLVideoElement, onFrame: (frame: TrackerFrame) => void): void {
@@ -246,6 +176,9 @@ export class MediaPipeWorkerHandTrackerBackend implements HandTrackerBackend {
     }
 
     const videoWithFrameCallback = video as VideoElementWithFrameCallback;
+    this.lastVideoTime = -1;
+    this.lastFrameTimestamp = performance.now();
+    this.lastProcessedAt = 0;
     this.activeVideo = videoWithFrameCallback;
     this.onFrame = onFrame;
     this.stopped = false;
@@ -261,7 +194,8 @@ export class MediaPipeWorkerHandTrackerBackend implements HandTrackerBackend {
         }
         scheduleDetect();
         if (!this.stopped) {
-          this.videoFrameCallbackId = videoWithFrameCallback.requestVideoFrameCallback?.(loop) ?? 0;
+          const scheduleNextFrame = videoWithFrameCallback.requestVideoFrameCallback;
+          this.videoFrameCallbackId = scheduleNextFrame ? scheduleNextFrame(loop) : 0;
         }
       };
 
@@ -288,6 +222,8 @@ export class MediaPipeWorkerHandTrackerBackend implements HandTrackerBackend {
     this.activeVideo?.cancelVideoFrameCallback?.(this.videoFrameCallbackId);
     this.videoFrameCallbackId = 0;
     this.activeVideo = null;
+    this.lastVideoTime = -1;
+    this.lastProcessedAt = 0;
     this.onFrame = null;
     this.worker?.terminate();
     this.worker = null;

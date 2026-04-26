@@ -8,7 +8,7 @@ import {
   getVisualActivationProgress,
   shouldPressTouch,
   tipIndexToFingerName
-} from "./touchModel";
+} from "../../src/lib/touchModel";
 
 describe("touchModel helpers", () => {
   it("maps playable tip indexes to fingertip names", () => {

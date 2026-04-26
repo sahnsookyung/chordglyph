@@ -5,7 +5,7 @@ import {
   getCalibrationDepthScore,
   getCalibrationFingerSamples,
   recordFingerDepthSample
-} from "./calibration";
+} from "../../src/lib/calibration";
 
 describe("calibration helpers", () => {
   it("keeps per-hand finger samples isolated", () => {

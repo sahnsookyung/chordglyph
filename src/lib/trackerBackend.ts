@@ -25,7 +25,7 @@ export async function createTrackerBackend(
     case "openpose":
       throw new Error("OpenPose backend adapter has not been implemented yet.");
     default:
-      throw new Error(`Unsupported tracker backend: ${kind}`);
+      throw new Error("Unsupported tracker backend.");
   }
 }
 

@@ -42,9 +42,26 @@ function classifyFromFeatures(features: HandFeatures): GestureClassification {
   const [bestMode, bestScore] = ranking[0] as [GestureClassification["mode"], number];
   const runnerUpScore = ranking[1]?.[1] ?? 0;
   const margin = bestScore - runnerUpScore;
-  const minimumConfidence =
-    bestMode === "dominant7" ? 0.46 : bestMode === "single" ? 0.48 : 0.43;
-  const minimumMargin = bestMode === "dominant7" ? 0.08 : 0.06;
+  const minimumConfidenceByMode: Record<GestureClassification["mode"], number> = {
+    dominant7: 0.46,
+    diminished: 0.43,
+    major: 0.43,
+    major7: 0.43,
+    minor: 0.43,
+    minor7: 0.43,
+    single: 0.48
+  };
+  const minimumMarginByMode: Record<GestureClassification["mode"], number> = {
+    dominant7: 0.08,
+    diminished: 0.06,
+    major: 0.06,
+    major7: 0.06,
+    minor: 0.06,
+    minor7: 0.06,
+    single: 0.06
+  };
+  const minimumConfidence = minimumConfidenceByMode[bestMode];
+  const minimumMargin = minimumMarginByMode[bestMode];
   const ambiguous =
     bestScore < minimumConfidence || margin < minimumMargin;
 

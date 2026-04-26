@@ -564,6 +564,35 @@ button {
   gap: 8px 10px;
 }
 
+.circle-octave-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.circle-octave-chip {
+  display: grid;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.circle-octave-chip span {
+  font-size: 0.76rem;
+  color: rgba(246, 247, 239, 0.72);
+}
+
+.circle-octave-chip input {
+  width: 100%;
+  min-width: 0;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.05);
+  color: #f6f7ef;
+  padding: 0.52rem 0.62rem;
+}
+
 .circle-combo-legend {
   display: flex;
   flex-wrap: wrap;

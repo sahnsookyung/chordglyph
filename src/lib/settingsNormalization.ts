@@ -1,4 +1,12 @@
-import { DEFAULT_SETTINGS, MAX_PIANO_OCTAVES, MIN_PIANO_OCTAVES } from "./constants";
+import {
+  DEFAULT_SETTINGS,
+  MAX_CIRCLE_NOTE_OCTAVE,
+  MAX_CIRCLE_OPEN_OCTAVE_SHIFT,
+  MAX_PIANO_OCTAVES,
+  MIN_CIRCLE_NOTE_OCTAVE,
+  MIN_CIRCLE_OPEN_OCTAVE_SHIFT,
+  MIN_PIANO_OCTAVES
+} from "./constants";
 import {
   createFingerActivationTuning,
   createFingerActivationTuningMap,
@@ -10,12 +18,14 @@ import {
 import type {
   CalibrationAudioMode,
   CircleFingerEnabledMap,
+  CircleNoteOctaveMap,
   FingerActivationTuning,
   FingerActivationTuningMap,
   FingerDepthSensitivityMap,
   FingerTouchCalibrationMap,
   HandedBooleanMap,
   HandedCircleFingerEnabled,
+  HandedCircleNoteOctaves,
   HandedFingerActivationTuning,
   HandedNumberMap,
   HandedTouchCalibration,
@@ -103,6 +113,35 @@ function normalizeHandedBooleanMap(
   };
 }
 
+function normalizeCircleNoteOctaveMap(
+  value: unknown,
+  fallback: CircleNoteOctaveMap
+): CircleNoteOctaveMap {
+  const raw = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+
+  return {
+    C: normalizeInteger(raw.C, fallback.C, MIN_CIRCLE_NOTE_OCTAVE, MAX_CIRCLE_NOTE_OCTAVE),
+    D: normalizeInteger(raw.D, fallback.D, MIN_CIRCLE_NOTE_OCTAVE, MAX_CIRCLE_NOTE_OCTAVE),
+    E: normalizeInteger(raw.E, fallback.E, MIN_CIRCLE_NOTE_OCTAVE, MAX_CIRCLE_NOTE_OCTAVE),
+    F: normalizeInteger(raw.F, fallback.F, MIN_CIRCLE_NOTE_OCTAVE, MAX_CIRCLE_NOTE_OCTAVE),
+    G: normalizeInteger(raw.G, fallback.G, MIN_CIRCLE_NOTE_OCTAVE, MAX_CIRCLE_NOTE_OCTAVE),
+    A: normalizeInteger(raw.A, fallback.A, MIN_CIRCLE_NOTE_OCTAVE, MAX_CIRCLE_NOTE_OCTAVE),
+    B: normalizeInteger(raw.B, fallback.B, MIN_CIRCLE_NOTE_OCTAVE, MAX_CIRCLE_NOTE_OCTAVE)
+  };
+}
+
+function normalizeHandedCircleNoteOctaves(
+  value: unknown,
+  fallback: HandedCircleNoteOctaves
+): HandedCircleNoteOctaves {
+  const raw = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+
+  return {
+    Left: normalizeCircleNoteOctaveMap(raw.Left, fallback.Left),
+    Right: normalizeCircleNoteOctaveMap(raw.Right, fallback.Right)
+  };
+}
+
 function normalizeSingleFingerSensitivity(
   value: unknown,
   fallback: FingerDepthSensitivityMap
@@ -158,18 +197,14 @@ function normalizeTouchCalibrationPoint(
       : fallback.pressDepth;
   const rawHoverDepth = asNullableFiniteNumber(raw.rawHoverDepth, fallback.rawHoverDepth);
   const rawPressDepth = asNullableFiniteNumber(raw.rawPressDepth, fallback.rawPressDepth);
-  const rawDirection =
-    rawHoverDepth !== null && rawPressDepth !== null
-      ? rawPressDepth >= rawHoverDepth
-        ? 1
-        : -1
-      : hoverDepth !== null && pressDepth !== null
-      ? pressDepth >= hoverDepth
-        ? 1
-        : -1
-      : raw.direction === -1 || raw.direction === 1
-        ? (raw.direction as TouchCalibrationDirection)
-        : fallback.direction;
+  const rawDirection = resolveCalibrationDirection(
+    rawHoverDepth,
+    rawPressDepth,
+    hoverDepth,
+    pressDepth,
+    raw.direction,
+    fallback.direction
+  );
 
   return {
     hoverDepth,
@@ -190,6 +225,29 @@ function normalizeTouchCalibrationPoint(
     sampleCount: Math.max(0, asFiniteNumber(raw.sampleCount, fallback.sampleCount)),
     updatedAt: asNullableFiniteNumber(raw.updatedAt, fallback.updatedAt)
   };
+}
+
+function resolveCalibrationDirection(
+  rawHoverDepth: number | null,
+  rawPressDepth: number | null,
+  hoverDepth: number | null,
+  pressDepth: number | null,
+  candidateDirection: unknown,
+  fallbackDirection: TouchCalibrationDirection
+): TouchCalibrationDirection {
+  if (rawHoverDepth !== null && rawPressDepth !== null) {
+    return rawPressDepth >= rawHoverDepth ? 1 : -1;
+  }
+
+  if (hoverDepth !== null && pressDepth !== null) {
+    return pressDepth >= hoverDepth ? 1 : -1;
+  }
+
+  if (candidateDirection === -1 || candidateDirection === 1) {
+    return candidateDirection;
+  }
+
+  return fallbackDirection;
 }
 
 function normalizeFingerTouchCalibrationMap(
@@ -460,6 +518,30 @@ export function normalizeInstrumentSettings(value: unknown): InstrumentSettings 
       persisted.circleOfFifths,
       DEFAULT_SETTINGS.circleOfFifths
     ),
+    circleNoteOctaves: normalizeHandedCircleNoteOctaves(
+      persisted.circleNoteOctaves,
+      DEFAULT_SETTINGS.circleNoteOctaves
+    ),
+    circleOpenOctaveShift: {
+      Left: normalizeInteger(
+        typeof persisted.circleOpenOctaveShift === "object" &&
+          persisted.circleOpenOctaveShift !== null
+          ? (persisted.circleOpenOctaveShift as Record<string, unknown>).Left
+          : persisted.circleOpenOctaveShift,
+        DEFAULT_SETTINGS.circleOpenOctaveShift.Left,
+        MIN_CIRCLE_OPEN_OCTAVE_SHIFT,
+        MAX_CIRCLE_OPEN_OCTAVE_SHIFT
+      ),
+      Right: normalizeInteger(
+        typeof persisted.circleOpenOctaveShift === "object" &&
+          persisted.circleOpenOctaveShift !== null
+          ? (persisted.circleOpenOctaveShift as Record<string, unknown>).Right
+          : persisted.circleOpenOctaveShift,
+        DEFAULT_SETTINGS.circleOpenOctaveShift.Right,
+        MIN_CIRCLE_OPEN_OCTAVE_SHIFT,
+        MAX_CIRCLE_OPEN_OCTAVE_SHIFT
+      )
+    },
     deviceId: asString(persisted.deviceId, DEFAULT_SETTINGS.deviceId),
     audioOutputDeviceId: asString(
       persisted.audioOutputDeviceId,

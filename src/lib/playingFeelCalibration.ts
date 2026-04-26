@@ -1153,6 +1153,271 @@ export function skipPlayingFeelCalibrationFinger(
   };
 }
 
+function getNextHandAwaySince(
+  session: PlayingFeelCalibrationSession,
+  input: CalibrationUpdateInput
+): number | null {
+  const controlHandMissing = input.controlHandVisible === false;
+  const targetHandMissing = input.targetSample === null;
+  const shouldTrackHandAway = session.phase !== "control-rehearsal";
+
+  if (!controlHandMissing || !targetHandMissing || !shouldTrackHandAway) {
+    return null;
+  }
+
+  return session.handAwaySince ?? input.timestamp;
+}
+
+function handleControlRehearsalPhase(
+  session: PlayingFeelCalibrationSession,
+  input: CalibrationUpdateInput
+): CalibrationUpdateResult {
+  const gesture = session.command.stable ? session.command.rawGesture : "none";
+  const rehearsal =
+    gesture === "fist" || gesture === "pinch" || gesture === "open"
+      ? { ...session.rehearsal, [gesture]: true }
+      : session.rehearsal;
+  const learnedGestureCount = Object.values(rehearsal).filter(Boolean).length;
+  const complete = learnedGestureCount === 3;
+
+  if (complete) {
+    return {
+      session: resetForCapture(
+        { ...session, rehearsal },
+        "capture-hover",
+        input.timestamp,
+        `Center your ${session.targetHand.toLowerCase()} ${session.targetFinger} over a key and hold steady.`
+      ),
+      commit: null,
+      cue: "success",
+      normalAudioSuppressed: true
+    };
+  }
+
+  return {
+    session: {
+      ...session,
+      rehearsal,
+      guidance: "Rehearse control signs: fist accept, pinch retry, open palm pause.",
+      captureStatus: `${learnedGestureCount}/3 control signs learned.`,
+      progress: learnedGestureCount / 3
+    },
+    commit: null,
+    cue: null,
+    normalAudioSuppressed: true
+  };
+}
+
+function handlePausedPhase(session: PlayingFeelCalibrationSession): CalibrationUpdateResult {
+  return {
+    session: {
+      ...session,
+      guidance: "Paused. Show fist in the control zone or press Space to resume."
+    },
+    commit: null,
+    cue: null,
+    normalAudioSuppressed: true
+  };
+}
+
+function handleFingerSummaryPhase(
+  session: PlayingFeelCalibrationSession,
+  input: CalibrationUpdateInput
+): CalibrationUpdateResult {
+  if (input.timestamp - session.phaseStartedAt > 900) {
+    return {
+      session: advanceToNextFinger(session, input.timestamp),
+      commit: null,
+      cue: null,
+      normalAudioSuppressed: true
+    };
+  }
+
+  return {
+    session,
+    commit: null,
+    cue: null,
+    normalAudioSuppressed: true
+  };
+}
+
+function getHoverCaptureGuidance(
+  hover: ReturnType<typeof summarizeHoverSamples>,
+  targetSample: CalibrationFrameSample | null
+): string {
+  if (hover) {
+    return "Hover captured. Show fist to accept or pinch to retry.";
+  }
+  if (targetSample) {
+    return "Hold steady over one key.";
+  }
+  return "Move the target fingertip near the keyboard.";
+}
+
+function handleCaptureHoverPhase(
+  session: PlayingFeelCalibrationSession,
+  input: CalibrationUpdateInput
+): CalibrationUpdateResult {
+  const hoverSamples = appendContiguousSample(
+    session.hoverSamples,
+    input.targetSample,
+    input.timestamp,
+    120
+  );
+  const hover = summarizeHoverSamples(hoverSamples);
+  const durationProgress =
+    hoverSamples.length > 0
+      ? clamp(
+          (hoverSamples[hoverSamples.length - 1].timestamp - hoverSamples[0].timestamp) /
+            CALIBRATION_STABILITY_THRESHOLDS.hoverMinDurationMs
+        )
+      : 0;
+  const progress = hover
+    ? 1
+    : Math.min(durationProgress, hoverSamples.length / CALIBRATION_STABILITY_THRESHOLDS.hoverMinFrames);
+  const nextSession: PlayingFeelCalibrationSession = {
+    ...session,
+    hoverSamples,
+    pendingHover: hover,
+    progress,
+    qualityScore: hover?.qualityScore ?? null,
+    targetKey: hover?.targetKey ?? input.targetSample?.nearKey ?? null,
+    guidance: getHoverCaptureGuidance(hover, input.targetSample),
+    captureStatus: buildHoverCaptureStatus(hoverSamples, hover, input.targetSample)
+  };
+
+  if (!hover) {
+    return {
+      session: nextSession,
+      commit: null,
+      cue: null,
+      normalAudioSuppressed: true
+    };
+  }
+
+  return {
+    session: {
+      ...nextSession,
+      phase: "confirm-hover",
+      phaseStartedAt: input.timestamp,
+      command: emptyCommandState()
+    },
+    commit: null,
+    cue: null,
+    normalAudioSuppressed: true
+  };
+}
+
+function getTapPreviewMidiNote(
+  session: PlayingFeelCalibrationSession,
+  targetSample: CalibrationFrameSample | null
+): number | null {
+  if (!session.acceptedHover || !targetSample) {
+    return null;
+  }
+
+  const sameResolvedKey = getSampleResolvedKey(targetSample) === session.acceptedHover.targetKey;
+  const exceededExcursion =
+    Math.abs(targetSample.weightedDepth - session.acceptedHover.weightedDepth) >
+    getTapExcursionThreshold(session.acceptedHover);
+  return sameResolvedKey && exceededExcursion ? targetSample.midiNote : null;
+}
+
+function getCaptureTapGuidance(
+  tap: ReturnType<typeof summarizeTapSamples>,
+  cycles: number,
+  timedOut: boolean
+): string {
+  if (tap) {
+    return getTapConfirmationGuidance(tap, cycles);
+  }
+  if (timedOut) {
+    return "Tap capture timed out. Pinch or press R to retry.";
+  }
+  return "Press and lift naturally twice.";
+}
+
+function handleCaptureTapsPhase(
+  session: PlayingFeelCalibrationSession,
+  input: CalibrationUpdateInput
+): CalibrationUpdateResult {
+  const tapSamples = appendContiguousSample(
+    session.tapSamples,
+    input.targetSample,
+    input.timestamp,
+    520
+  );
+  const tap = session.acceptedHover ? summarizeTapSamples(tapSamples, session.acceptedHover) : null;
+  const cycles = session.acceptedHover ? detectTapCycles(tapSamples, session.acceptedHover).length : 0;
+  const timedOut = input.timestamp - session.phaseStartedAt > CALIBRATION_STABILITY_THRESHOLDS.tapTimeoutMs;
+  const nextSession: PlayingFeelCalibrationSession = {
+    ...session,
+    tapSamples,
+    pendingTap: tap,
+    progress: tap ? 1 : clamp(cycles / CALIBRATION_STABILITY_THRESHOLDS.tapMinCycles),
+    qualityScore: tap?.qualityScore ?? null,
+    previewMidiNote: getTapPreviewMidiNote(session, input.targetSample),
+    guidance: getCaptureTapGuidance(tap, cycles, timedOut),
+    captureStatus: buildTapCaptureStatus(
+      cycles,
+      session.acceptedHover,
+      input.targetSample,
+      input.timestamp,
+      session.phaseStartedAt
+    )
+  };
+
+  if (!tap) {
+    return {
+      session: nextSession,
+      commit: null,
+      cue: null,
+      normalAudioSuppressed: true
+    };
+  }
+
+  return {
+    session: {
+      ...nextSession,
+      phase: "confirm-taps",
+      phaseStartedAt: input.timestamp,
+      command: emptyCommandState()
+    },
+    commit: null,
+    cue: null,
+    normalAudioSuppressed: true
+  };
+}
+
+function maybeHandleCommandTransition(
+  session: PlayingFeelCalibrationSession,
+  timestamp: number
+): CalibrationUpdateResult | null {
+  if (session.phase !== "control-rehearsal" && session.command.command === "retry") {
+    return retryPlayingFeelCalibration(session, timestamp);
+  }
+
+  if (canSkipCurrentFinger(session) && session.command.command === "skip") {
+    return skipPlayingFeelCalibrationFinger(session, timestamp);
+  }
+
+  if (session.phase === "control-rehearsal" || session.command.command !== "accept") {
+    return null;
+  }
+
+  const weakTapPending =
+    session.phase === "confirm-taps" &&
+    session.pendingTap !== null &&
+    session.pendingTap.qualityScore < CALIBRATION_QUALITY_THRESHOLDS.weak;
+  const allowAcceptAnyway =
+    weakTapPending && session.command.elapsedMs >= CONTROL_GESTURE_THRESHOLDS.longHoldMs;
+  if (!weakTapPending || allowAcceptAnyway) {
+    return acceptPlayingFeelCalibration(session, timestamp, allowAcceptAnyway);
+  }
+
+  return null;
+}
+
 export function updatePlayingFeelCalibrationSession(
   current: PlayingFeelCalibrationSession,
   input: CalibrationUpdateInput
@@ -1166,7 +1431,7 @@ export function updatePlayingFeelCalibrationSession(
     };
   }
 
-  let session = {
+  const session = {
     ...current,
     command: updateCommandState(
       current.command,
@@ -1177,13 +1442,13 @@ export function updatePlayingFeelCalibrationSession(
     roleAmbiguousSince: input.roleAmbiguous
       ? current.roleAmbiguousSince ?? input.timestamp
       : null,
-    handAwaySince:
-      !input.controlHandVisible &&
-      current.phase !== "control-rehearsal" &&
-      input.targetSample === null
-        ? current.handAwaySince ?? input.timestamp
-        : null
+    handAwaySince: getNextHandAwaySince(current, input)
   };
+
+  const commandTransition = maybeHandleCommandTransition(session, input.timestamp);
+  if (commandTransition) {
+    return commandTransition;
+  }
 
   if (
     session.roleAmbiguousSince !== null &&
@@ -1240,198 +1505,24 @@ export function updatePlayingFeelCalibrationSession(
     };
   }
 
-  if (session.phase !== "control-rehearsal" && session.command.command === "retry") {
-    return retryPlayingFeelCalibration(session, input.timestamp);
-  }
-
-  if (
-    canSkipCurrentFinger(session) &&
-    session.command.command === "skip"
-  ) {
-    return skipPlayingFeelCalibrationFinger(session, input.timestamp);
-  }
-
-  if (session.phase !== "control-rehearsal" && session.command.command === "accept") {
-    const allowAcceptAnyway =
-      session.phase === "confirm-taps" &&
-      session.pendingTap !== null &&
-      session.pendingTap.qualityScore < CALIBRATION_QUALITY_THRESHOLDS.weak &&
-      session.command.elapsedMs >= CONTROL_GESTURE_THRESHOLDS.longHoldMs;
-    if (
-      session.phase !== "confirm-taps" ||
-      session.pendingTap === null ||
-      session.pendingTap.qualityScore >= CALIBRATION_QUALITY_THRESHOLDS.weak ||
-      allowAcceptAnyway
-    ) {
-      return acceptPlayingFeelCalibration(session, input.timestamp, allowAcceptAnyway);
-    }
-  }
-
   if (session.phase === "control-rehearsal") {
-    const gesture = session.command.stable ? session.command.rawGesture : "none";
-    const rehearsal =
-      gesture === "fist" || gesture === "pinch" || gesture === "open"
-        ? { ...session.rehearsal, [gesture]: true }
-        : session.rehearsal;
-    const complete = rehearsal.fist && rehearsal.pinch && rehearsal.open;
-    return {
-      session: complete
-        ? resetForCapture(
-            { ...session, rehearsal },
-            "capture-hover",
-            input.timestamp,
-            `Center your ${session.targetHand.toLowerCase()} ${session.targetFinger} over a key and hold steady.`
-          )
-        : {
-            ...session,
-            rehearsal,
-            guidance: "Rehearse control signs: fist accept, pinch retry, open palm pause.",
-            captureStatus: `${Object.values(rehearsal).filter(Boolean).length}/3 control signs learned.`,
-            progress: Object.values(rehearsal).filter(Boolean).length / 3
-          },
-      commit: null,
-      cue: complete ? "success" : null,
-      normalAudioSuppressed: true
-    };
+    return handleControlRehearsalPhase(session, input);
   }
 
   if (session.phase === "paused") {
-    return {
-      session: {
-        ...session,
-        guidance: "Paused. Show fist in the control zone or press Space to resume."
-      },
-      commit: null,
-      cue: null,
-      normalAudioSuppressed: true
-    };
+    return handlePausedPhase(session);
   }
 
   if (session.phase === "finger-summary") {
-    if (input.timestamp - session.phaseStartedAt > 900) {
-      return {
-        session: advanceToNextFinger(session, input.timestamp),
-        commit: null,
-        cue: null,
-        normalAudioSuppressed: true
-      };
-    }
-
-    return {
-      session,
-      commit: null,
-      cue: null,
-      normalAudioSuppressed: true
-    };
+    return handleFingerSummaryPhase(session, input);
   }
 
   if (session.phase === "capture-hover") {
-    const hoverSamples = appendContiguousSample(
-      session.hoverSamples,
-      input.targetSample,
-      input.timestamp,
-      120
-    );
-    const hover = summarizeHoverSamples(hoverSamples);
-    const durationProgress =
-      hoverSamples.length > 0
-        ? clamp(
-            (hoverSamples[hoverSamples.length - 1].timestamp - hoverSamples[0].timestamp) /
-              CALIBRATION_STABILITY_THRESHOLDS.hoverMinDurationMs
-          )
-        : 0;
-    session = {
-      ...session,
-      hoverSamples,
-      pendingHover: hover,
-      progress: hover
-        ? 1
-        : Math.min(
-            durationProgress,
-            hoverSamples.length / CALIBRATION_STABILITY_THRESHOLDS.hoverMinFrames
-          ),
-      qualityScore: hover?.qualityScore ?? null,
-      targetKey: hover?.targetKey ?? input.targetSample?.nearKey ?? null,
-      guidance: hover
-        ? "Hover captured. Show fist to accept or pinch to retry."
-        : input.targetSample
-          ? "Hold steady over one key."
-          : "Move the target fingertip near the keyboard.",
-      captureStatus: buildHoverCaptureStatus(hoverSamples, hover, input.targetSample)
-    };
-
-    if (hover) {
-      session = {
-        ...session,
-        phase: "confirm-hover",
-        phaseStartedAt: input.timestamp,
-        command: emptyCommandState()
-      };
-    }
-
-    return {
-      session,
-      commit: null,
-      cue: null,
-      normalAudioSuppressed: true
-    };
+    return handleCaptureHoverPhase(session, input);
   }
 
   if (session.phase === "capture-taps") {
-    const tapSamples = appendContiguousSample(
-      session.tapSamples,
-      input.targetSample,
-      input.timestamp,
-      520
-    );
-    const tap = session.acceptedHover ? summarizeTapSamples(tapSamples, session.acceptedHover) : null;
-    const cycles = session.acceptedHover ? detectTapCycles(tapSamples, session.acceptedHover).length : 0;
-    const timedOut = input.timestamp - session.phaseStartedAt > CALIBRATION_STABILITY_THRESHOLDS.tapTimeoutMs;
-    session = {
-      ...session,
-      tapSamples,
-      pendingTap: tap,
-      progress: tap
-        ? 1
-        : clamp(cycles / CALIBRATION_STABILITY_THRESHOLDS.tapMinCycles),
-      qualityScore: tap?.qualityScore ?? null,
-      previewMidiNote:
-        session.acceptedHover &&
-        input.targetSample &&
-        getSampleResolvedKey(input.targetSample) === session.acceptedHover.targetKey &&
-        Math.abs(input.targetSample.weightedDepth - session.acceptedHover.weightedDepth) >
-          getTapExcursionThreshold(session.acceptedHover)
-          ? input.targetSample.midiNote
-          : null,
-      guidance: tap
-        ? getTapConfirmationGuidance(tap, cycles)
-        : timedOut
-          ? "Tap capture timed out. Pinch or press R to retry."
-          : "Press and lift naturally twice.",
-      captureStatus: buildTapCaptureStatus(
-        cycles,
-        session.acceptedHover,
-        input.targetSample,
-        input.timestamp,
-        session.phaseStartedAt
-      )
-    };
-
-    if (tap) {
-      session = {
-        ...session,
-        phase: "confirm-taps",
-        phaseStartedAt: input.timestamp,
-        command: emptyCommandState()
-      };
-    }
-
-    return {
-      session,
-      commit: null,
-      cue: null,
-      normalAudioSuppressed: true
-    };
+    return handleCaptureTapsPhase(session, input);
   }
 
   return {

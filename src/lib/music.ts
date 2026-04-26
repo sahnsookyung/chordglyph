@@ -134,6 +134,16 @@ export function getRootMidi(rootIndex: number): number {
 
 export function buildVoicing(rootIndex: number, mode: ChordMode): number[] {
   const rootMidi = getRootMidi(rootIndex);
+  return buildVoicingFromMidiRoot(rootMidi, mode);
+}
+
+export function getMidiForSemitoneOctave(semitone: number, octave: number): number {
+  const pitchClass = ((semitone % 12) + 12) % 12;
+  const octaveOffset = Math.floor(semitone / 12);
+  return (octave + octaveOffset + 1) * 12 + pitchClass;
+}
+
+export function buildVoicingFromMidiRoot(rootMidi: number, mode: ChordMode): number[] {
   return CHORD_INTERVALS[mode].map((interval) => rootMidi + interval);
 }
 
@@ -144,9 +154,21 @@ export function midiToNoteName(midi: number): string {
   return `${names[pitchClass]}${octave}`;
 }
 
+export function describeMidiNote(midi: number, style: NoteLabelStyle): string {
+  const octave = Math.floor(midi / 12) - 1;
+  return `${describeRootSemitone(midi, style)}${octave}`;
+}
+
 export function describeChord(rootIndex: number, mode: ChordMode, style: NoteLabelStyle): string {
   const rootName = describeRootSemitone(rootIndex, style);
+  return describeChordFromRootName(rootName, mode);
+}
 
+export function describeMidiChord(rootMidi: number, mode: ChordMode, style: NoteLabelStyle): string {
+  return describeChordFromRootName(describeMidiNote(rootMidi, style), mode);
+}
+
+function describeChordFromRootName(rootName: string, mode: ChordMode): string {
   switch (mode) {
     case "major":
       return `${rootName} major`;

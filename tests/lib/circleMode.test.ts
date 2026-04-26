@@ -1,12 +1,15 @@
 import {
   classifyCircleChordQuality,
+  getCircleOctaveShiftForPose,
   getCircleLayout,
   getCircleNoteOrder,
+  getCircleRootLabel,
   getCircleSegmentLabels,
   getCircleRootSemitone,
+  shouldUseCircleChordVoicing,
   resolveCircleSegment
-} from "./circleMode";
-import type { HandFeatures } from "./types";
+} from "../../src/lib/circleMode";
+import type { HandFeatures } from "../../src/lib/types";
 
 function makeFeatures(
   fingerExtended: Partial<HandFeatures["fingerExtended"]>
@@ -71,6 +74,8 @@ describe("circle mode helpers", () => {
   it("maps natural and fifths order independently", () => {
     expect(getCircleNoteOrder(false)).toEqual(["C", "D", "E", "F", "G", "A", "B"]);
     expect(getCircleNoteOrder(true)).toEqual(["C", "G", "D", "A", "E", "B", "F"]);
+    expect(getCircleRootLabel(1, false)).toBe("D");
+    expect(getCircleRootLabel(1, true)).toBe("G");
     expect(getCircleRootSemitone(1, false)).toBe(2);
     expect(getCircleRootSemitone(1, true)).toBe(7);
     expect(getCircleSegmentLabels("Right", true).map((segment) => segment.label)).toEqual([
@@ -100,5 +105,17 @@ describe("circle mode helpers", () => {
       )
     ).toBe("minor7");
     expect(classifyCircleChordQuality(makeFeatures({ pinky: true }))).toBe("diminished");
+  });
+
+  it("disables shape chords when multiple fingertips are enabled", () => {
+    expect(shouldUseCircleChordVoicing(0)).toBe(true);
+    expect(shouldUseCircleChordVoicing(1)).toBe(true);
+    expect(shouldUseCircleChordVoicing(2)).toBe(false);
+    expect(shouldUseCircleChordVoicing(5)).toBe(false);
+  });
+
+  it("applies the open-hand octave shift only for clearly straightened hands", () => {
+    expect(getCircleOctaveShiftForPose(makeFeatures({ index: true }), 1)).toBe(1);
+    expect(getCircleOctaveShiftForPose({ ...makeFeatures({}), openness: 0.42 }, -1)).toBe(0);
   });
 });

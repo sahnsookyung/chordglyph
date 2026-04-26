@@ -1,4 +1,4 @@
-import { mirrorLandmarkForDisplay, normalizeHandedness } from "./trackerNormalization";
+import { mirrorLandmarkForDisplay, normalizeHandedness } from "../../src/lib/trackerNormalization";
 
 describe("tracker normalization", () => {
   it("swaps MediaPipe handedness labels into real camera handedness", () => {

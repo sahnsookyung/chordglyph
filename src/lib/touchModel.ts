@@ -173,15 +173,11 @@ export function shouldPressTouch(input: {
   const sameKeyAsPrevious = input.currentKey === input.previousKey;
 
   if (input.previousPressed && sameKeyAsPrevious) {
-    if (
+    return !(
       input.activation <= releaseActivationThreshold ||
       (input.activation <= pressActivationThreshold &&
         input.activationVelocity <= -releaseVelocityThreshold)
-    ) {
-      return false;
-    }
-
-    return true;
+    );
   }
 
   if (input.activation >= hardActivationThreshold) {

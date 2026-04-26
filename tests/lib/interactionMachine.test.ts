@@ -2,8 +2,8 @@ import {
   initialInteractionState,
   updateInteractionState,
   type InteractionFrame
-} from "./interactionMachine";
-import type { GestureClassification } from "./types";
+} from "../../src/lib/interactionMachine";
+import type { GestureClassification } from "../../src/lib/types";
 
 const stableMajor: GestureClassification = {
   mode: "major",

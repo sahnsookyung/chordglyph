@@ -23,6 +23,7 @@ export type NoteLabelStyle = "sharps" | "flats";
 export type NoteStripSize = "compact" | "normal" | "large";
 export type SynthPatch = "soft-keys" | "warm-pad";
 export type FingertipName = "thumb" | "index" | "middle" | "ring" | "pinky";
+export type CircleNoteName = "C" | "D" | "E" | "F" | "G" | "A" | "B";
 export type TrackerBackendKind =
   | "mediapipe-hands"
   | "mediapipe-hands-worker"
@@ -48,6 +49,8 @@ export type FingerDepthSampleMap = Record<FingertipName, number | null>;
 export type HandedFingerDepthSamples = Record<Handedness, FingerDepthSampleMap>;
 export type CircleFingerEnabledMap = Record<FingertipName, boolean>;
 export type HandedCircleFingerEnabled = Record<Handedness, CircleFingerEnabledMap>;
+export type CircleNoteOctaveMap = Record<CircleNoteName, number>;
+export type HandedCircleNoteOctaves = Record<Handedness, CircleNoteOctaveMap>;
 export type HandedBooleanMap = Record<Handedness, boolean>;
 export type HandedTouchDepthMap = Record<Handedness, number | null>;
 export type HandedNumberMap = Record<Handedness, number>;
@@ -153,6 +156,8 @@ export interface InstrumentSettings {
   showFingertipStats: boolean;
   circleFingerEnabled: HandedCircleFingerEnabled;
   circleOfFifths: HandedBooleanMap;
+  circleNoteOctaves: HandedCircleNoteOctaves;
+  circleOpenOctaveShift: HandedNumberMap;
   deviceId: string;
   audioOutputDeviceId: string;
   trackingBackend: TrackerBackendKind;

@@ -1,5 +1,5 @@
-import { classifyChordGestureFromFeatures } from "./gestureClassifier";
-import type { HandFeatures } from "./types";
+import { classifyChordGestureFromFeatures } from "../../src/lib/gestureClassifier";
+import type { HandFeatures } from "../../src/lib/types";
 
 function makeFeatures(overrides: Partial<HandFeatures>): HandFeatures {
   return {
