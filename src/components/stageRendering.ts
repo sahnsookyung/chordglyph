@@ -103,18 +103,23 @@ export function circleLabelPoint(segment: number): { x: number; y: number } {
   return circlePoint((segment * Math.PI * 2) / CIRCLE_NOTE_COUNT, 31);
 }
 
+interface HandPathRenderOptions {
+  stroke: string;
+  thickness: number;
+  activeTouchMarkers: ActiveTouchMarker[];
+  idleTipColor: string;
+  activeColor: string;
+  showLabels: boolean;
+}
+
 export function drawHandPath(
   context: CanvasRenderingContext2D,
   landmarks: Landmark[],
   width: number,
   height: number,
-  stroke: string,
-  thickness: number,
-  activeTouchMarkers: ActiveTouchMarker[],
-  idleTipColor: string,
-  activeColor: string,
-  showLabels: boolean
+  options: HandPathRenderOptions
 ): void {
+  const { stroke, thickness, activeTouchMarkers, idleTipColor, activeColor, showLabels } = options;
   context.strokeStyle = stroke;
   context.lineWidth = 1 + thickness * 2.2;
   HAND_CONNECTIONS.forEach(([startIndex, endIndex]) => {

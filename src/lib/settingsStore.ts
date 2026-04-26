@@ -7,12 +7,12 @@ const STORE_NAME = "settings";
 const SETTINGS_KEY = "instrument";
 
 function openSettingsDatabase(): Promise<IDBDatabase | null> {
-  if (typeof window === "undefined" || !("indexedDB" in window)) {
+  if (typeof globalThis.window === "undefined" || !("indexedDB" in globalThis.window)) {
     return Promise.resolve(null);
   }
 
   return new Promise((resolve, reject) => {
-    const request = window.indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
+    const request = globalThis.window.indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
 
     request.onerror = () => reject(request.error ?? new Error("Unable to open settings database"));
     request.onupgradeneeded = () => {

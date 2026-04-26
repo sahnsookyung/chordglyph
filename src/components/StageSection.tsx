@@ -186,7 +186,7 @@ export function StageSection({
             <>
               {calibrationControlZones.map((zone, index) => (
                 <div
-                  key={`calibration-control-zone-${index}`}
+                  key={`calibration-control-zone-${zone.left}-${zone.right}-${zone.top}-${zone.bottom}`}
                   className="calibration-control-zone"
                   style={{
                     left: `${zone.left * 100}%`,

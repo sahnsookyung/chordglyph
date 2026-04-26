@@ -45,25 +45,27 @@ describe("stageRendering helpers", () => {
       hand.landmarks,
       100,
       100,
-      "#ffffff",
-      0.5,
-      [
-        {
-          tipIndex: 8,
-          source: "piano",
-          modelZ: -0.02,
-          rawDepthScore: 0.02,
-          sensitivity: 1.5,
-          depthScore: 0.03,
-          activationProgress: 0.9,
-          activationVelocity: 0.4,
-          isCalibrated: true,
-          isPressed: true
-        }
-      ],
-      "#7dd3fc",
-      "#f97316",
-      true
+      {
+        stroke: "#ffffff",
+        thickness: 0.5,
+        activeTouchMarkers: [
+          {
+            tipIndex: 8,
+            source: "piano",
+            modelZ: -0.02,
+            rawDepthScore: 0.02,
+            sensitivity: 1.5,
+            depthScore: 0.03,
+            activationProgress: 0.9,
+            activationVelocity: 0.4,
+            isCalibrated: true,
+            isPressed: true
+          }
+        ],
+        idleTipColor: "#7dd3fc",
+        activeColor: "#f97316",
+        showLabels: true
+      }
     );
 
     expect(spies.lineTo).toHaveBeenCalled();

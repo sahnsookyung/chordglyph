@@ -7,6 +7,10 @@ import {
 } from "./handTrackingShared";
 
 let landmarker: HandLandmarker | null = null;
+const workerScope = globalThis as typeof globalThis & {
+  postMessage: (response: WorkerResponse) => void;
+  onmessage: ((event: MessageEvent<WorkerRequest>) => void) | null;
+};
 
 async function initializeLandmarker(): Promise<void> {
   if (landmarker) {
@@ -17,10 +21,10 @@ async function initializeLandmarker(): Promise<void> {
 }
 
 function post(response: WorkerResponse): void {
-  self.postMessage(response);
+  workerScope.postMessage(response);
 }
 
-self.onmessage = (event: MessageEvent<WorkerRequest>) => {
+workerScope.onmessage = (event: MessageEvent<WorkerRequest>) => {
   const message = event.data;
 
   if (message.kind === "init") {

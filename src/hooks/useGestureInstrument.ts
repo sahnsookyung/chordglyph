@@ -195,11 +195,15 @@ const FINGER_NAME_TO_TIP_INDEX: Record<FingertipName, 4 | 8 | 12 | 16 | 20> = {
 };
 
 function getAudioContextConstructor(): typeof AudioContext | null {
-  if (typeof window === "undefined") {
+  if (typeof globalThis.window === "undefined") {
     return null;
   }
 
-  return window.AudioContext ?? (window as WindowWithWebkitAudioContext).webkitAudioContext ?? null;
+  return (
+    globalThis.window.AudioContext ??
+    (globalThis.window as WindowWithWebkitAudioContext).webkitAudioContext ??
+    null
+  );
 }
 
 function primeAudioContext(context: AudioContext): void {
@@ -306,6 +310,10 @@ function downloadJsonFile(filename: string, content: string): void {
 function appendLog(logger: SessionLogger, event: SessionLogEvent): number {
   logger.push(event);
   return logger.length();
+}
+
+function swallowAsyncError(error: unknown): void {
+  console.warn("[ChordGlyph] Ignored async task failure", error);
 }
 
 function toDebugHandInfo(hand: TrackedHand | null): DebugHandInfo | null {
@@ -1016,10 +1024,10 @@ function syncCalibrationUpdateSideEffects(params: {
   if (!calibrationUpdate.session.active && calibrationUpdate.session.phase === "complete") {
     preCalibrationSettingsRef.current = null;
     if (settingsSaveTimeoutRef.current !== null) {
-      window.clearTimeout(settingsSaveTimeoutRef.current);
+      globalThis.clearTimeout(settingsSaveTimeoutRef.current);
       settingsSaveTimeoutRef.current = null;
     }
-    void saveInstrumentSettings(settingsRef.current).catch(() => undefined);
+    saveInstrumentSettings(settingsRef.current).catch(swallowAsyncError);
   }
   if (calibrationUpdate.cue && calibrationAudioMode !== "off") {
     audioRef.current?.triggerCalibrationCue(calibrationUpdate.cue);
@@ -1456,12 +1464,12 @@ export function useGestureInstrument(): {
   }, []);
 
   useEffect(() => {
-    void refreshDevices();
+    refreshDevices().catch(swallowAsyncError);
   }, [refreshDevices]);
 
   useEffect(() => {
     const handleDeviceChange = () => {
-      void refreshDevices();
+      refreshDevices().catch(swallowAsyncError);
     };
 
     navigator.mediaDevices?.addEventListener?.("devicechange", handleDeviceChange);
@@ -1501,7 +1509,7 @@ export function useGestureInstrument(): {
       }
     };
 
-    void hydrateSettings();
+    hydrateSettings().catch(swallowAsyncError);
 
     return () => {
       cancelled = true;
@@ -1514,7 +1522,7 @@ export function useGestureInstrument(): {
     }
 
     if (settingsSaveTimeoutRef.current !== null) {
-      window.clearTimeout(settingsSaveTimeoutRef.current);
+      globalThis.clearTimeout(settingsSaveTimeoutRef.current);
       settingsSaveTimeoutRef.current = null;
     }
 
@@ -1522,14 +1530,14 @@ export function useGestureInstrument(): {
       return;
     }
 
-    settingsSaveTimeoutRef.current = window.setTimeout(() => {
+    settingsSaveTimeoutRef.current = globalThis.setTimeout(() => {
       settingsSaveTimeoutRef.current = null;
-      void saveInstrumentSettings(settingsRef.current).catch(() => undefined);
+      saveInstrumentSettings(settingsRef.current).catch(swallowAsyncError);
     }, SETTINGS_SAVE_DEBOUNCE_MS);
 
     return () => {
       if (settingsSaveTimeoutRef.current !== null) {
-        window.clearTimeout(settingsSaveTimeoutRef.current);
+        globalThis.clearTimeout(settingsSaveTimeoutRef.current);
         settingsSaveTimeoutRef.current = null;
       }
     };
@@ -1553,7 +1561,7 @@ export function useGestureInstrument(): {
     audioOutputRequestIdRef.current = requestId;
     previousAudioOutputDeviceIdRef.current = deviceId;
 
-    void audioEngine
+    audioEngine
       .setOutputDevice(deviceId)
       .then((applied) => {
         if (audioOutputRequestIdRef.current !== requestId) {
@@ -1602,7 +1610,7 @@ export function useGestureInstrument(): {
   useEffect(
     () => () => {
       if (settingsSaveTimeoutRef.current !== null) {
-        window.clearTimeout(settingsSaveTimeoutRef.current);
+        globalThis.clearTimeout(settingsSaveTimeoutRef.current);
       }
       trackerRef.current?.stop(streamRef.current);
       audioRef.current?.dispose();
@@ -1674,7 +1682,7 @@ export function useGestureInstrument(): {
         liveSettings.pianoOctaves
       ].join("|");
       let frameGeometry = frameGeometryRef.current;
-      if (!frameGeometry || frameGeometry.key !== geometryKey) {
+      if (frameGeometry?.key !== geometryKey) {
         const noteCount = getNaturalKeyCount(liveSettings.pianoOctaves);
         frameGeometry = {
           key: geometryKey,
@@ -2021,7 +2029,7 @@ export function useGestureInstrument(): {
         trackerStatusRef.current = "ready";
         previousDeviceIdRef.current = deviceId;
         previousTrackerBackendRef.current = backendKind;
-        void refreshDevices();
+        refreshDevices().catch(swallowAsyncError);
       } catch (caughtError) {
         const message =
           caughtError instanceof Error ? caughtError.message : "Unable to initialize camera";
@@ -2062,7 +2070,7 @@ export function useGestureInstrument(): {
     }
 
     const liveSettings = settingsRef.current;
-    void beginTracking(liveSettings.deviceId, liveSettings.trackingBackend);
+    beginTracking(liveSettings.deviceId, liveSettings.trackingBackend).catch(swallowAsyncError);
   }, [beginTracking, settings.deviceId, settings.trackingBackend, settingsReady, trackerStatus]);
 
   const stopTracking = useCallback(() => {
@@ -2213,7 +2221,7 @@ export function useGestureInstrument(): {
     }
 
     startupAttemptedRef.current = true;
-    void startTracking();
+    startTracking().catch(swallowAsyncError);
   }, [settingsReady, startTracking]);
 
   useEffect(() => {
@@ -2223,15 +2231,15 @@ export function useGestureInstrument(): {
     }
 
     const retryAudio = () => {
-      void armAudio();
+      armAudio().catch(swallowAsyncError);
     };
 
-    window.addEventListener("pointerdown", retryAudio, { capture: true });
-    window.addEventListener("keydown", retryAudio, { capture: true });
+    globalThis.addEventListener("pointerdown", retryAudio, { capture: true });
+    globalThis.addEventListener("keydown", retryAudio, { capture: true });
 
     return () => {
-      window.removeEventListener("pointerdown", retryAudio, { capture: true });
-      window.removeEventListener("keydown", retryAudio, { capture: true });
+      globalThis.removeEventListener("pointerdown", retryAudio, { capture: true });
+      globalThis.removeEventListener("keydown", retryAudio, { capture: true });
     };
   }, [armed, armAudio, audioStatus]);
 
@@ -2278,7 +2286,7 @@ export function useGestureInstrument(): {
     const trackerSelectionChanged =
       patch.deviceId !== undefined || patch.trackingBackend !== undefined;
     if (trackerSelectionChanged && trackerStatusRef.current === "ready") {
-      void beginTracking(next.deviceId, next.trackingBackend);
+      beginTracking(next.deviceId, next.trackingBackend).catch(swallowAsyncError);
     }
   }, [beginTracking, routeAudioOutput]);
 
@@ -2417,10 +2425,10 @@ export function useGestureInstrument(): {
       if (!result.session.active && result.session.phase === "complete") {
         preCalibrationSettingsRef.current = null;
         if (settingsSaveTimeoutRef.current !== null) {
-          window.clearTimeout(settingsSaveTimeoutRef.current);
+          globalThis.clearTimeout(settingsSaveTimeoutRef.current);
           settingsSaveTimeoutRef.current = null;
         }
-        void saveInstrumentSettings(settingsRef.current).catch(() => undefined);
+        saveInstrumentSettings(settingsRef.current).catch(swallowAsyncError);
       }
 
       setRenderState((current) => ({
@@ -2440,7 +2448,7 @@ export function useGestureInstrument(): {
   const startPlayingFeelCalibrationFlow = useCallback(
     (scope: CalibrationScope) => {
       if (settingsSaveTimeoutRef.current !== null) {
-        window.clearTimeout(settingsSaveTimeoutRef.current);
+        globalThis.clearTimeout(settingsSaveTimeoutRef.current);
         settingsSaveTimeoutRef.current = null;
       }
       preCalibrationSettingsRef.current = settingsRef.current;
@@ -2451,8 +2459,8 @@ export function useGestureInstrument(): {
       audioRef.current?.stopCalibrationPreview();
       lastMidiSignatureRef.current = "";
       lastCalibrationPreviewMidiSignatureRef.current = "";
-      void startTracking();
-      void armAudio();
+      startTracking().catch(swallowAsyncError);
+      armAudio().catch(swallowAsyncError);
       setRenderState((current) => ({
         ...current,
         calibrationSession: nextSession,
@@ -2534,8 +2542,8 @@ export function useGestureInstrument(): {
       }
     };
 
-    window.addEventListener("keydown", handleCalibrationKey);
-    return () => window.removeEventListener("keydown", handleCalibrationKey);
+    globalThis.addEventListener("keydown", handleCalibrationKey);
+    return () => globalThis.removeEventListener("keydown", handleCalibrationKey);
   }, [
     acceptPlayingFeelCalibrationStep,
     cancelPlayingFeelCalibrationFlow,

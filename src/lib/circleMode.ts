@@ -83,7 +83,7 @@ export function getCircleSegmentLabels(
 export function resolveCircleSegment(point: Pick<Landmark, "x" | "y">, layout: CircleLayout): number | null {
   const dx = (point.x - layout.center.x) * layout.aspectRatio;
   const dy = point.y - layout.center.y;
-  const distance = Math.sqrt(dx * dx + dy * dy);
+  const distance = Math.hypot(dx, dy);
 
   if (distance < layout.innerRadiusY || distance > layout.radiusY) {
     return null;

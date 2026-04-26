@@ -426,7 +426,10 @@ function buildHoverCaptureStatus(
   }
 
   const first = usableSamples[0];
-  const last = usableSamples[usableSamples.length - 1];
+  const last = usableSamples.at(-1);
+  if (!last) {
+    return "Move over a white or black key.";
+  }
   const elapsedMs = last.timestamp - first.timestamp;
   return `${usableSamples.length}/${CALIBRATION_STABILITY_THRESHOLDS.hoverMinFrames} frames, ${formatSeconds(elapsedMs)}/${formatSeconds(CALIBRATION_STABILITY_THRESHOLDS.hoverMinDurationMs)} steady hold.`;
 }
@@ -489,7 +492,10 @@ function summarizeHoverSamples(samples: CalibrationFrameSample[]): CalibrationHo
   }
 
   const first = usableSamples[0];
-  const last = usableSamples[usableSamples.length - 1];
+  const last = usableSamples.at(-1);
+  if (!last) {
+    return null;
+  }
   if (last.timestamp - first.timestamp < CALIBRATION_STABILITY_THRESHOLDS.hoverMinDurationMs) {
     return null;
   }
@@ -631,7 +637,7 @@ function summarizeTapSamples(
   const cycleScore = clamp(cycles.length / 3);
   const returnScore = clamp(
     1 -
-      Math.abs(validSamples[validSamples.length - 1].weightedDepth - hover.weightedDepth) /
+      Math.abs((validSamples.at(-1)?.weightedDepth ?? hover.weightedDepth) - hover.weightedDepth) /
         Math.max(pressDelta, 0.003)
   );
   const qualityScore = clamp(
@@ -751,7 +757,7 @@ function appendContiguousSample(
   timestamp: number,
   maxSamples: number
 ): CalibrationFrameSample[] {
-  const lastSample = samples[samples.length - 1];
+  const lastSample = samples.at(-1);
 
   if (!nextSample) {
     return lastSample &&
@@ -1268,7 +1274,7 @@ function handleCaptureHoverPhase(
   const durationProgress =
     hoverSamples.length > 0
       ? clamp(
-          (hoverSamples[hoverSamples.length - 1].timestamp - hoverSamples[0].timestamp) /
+          ((hoverSamples.at(-1)?.timestamp ?? hoverSamples[0].timestamp) - hoverSamples[0].timestamp) /
             CALIBRATION_STABILITY_THRESHOLDS.hoverMinDurationMs
         )
       : 0;

@@ -126,7 +126,7 @@ export class MediaPipeWorkerHandTrackerBackend implements HandTrackerBackend {
     }
 
     if (typeof Worker === "undefined" || typeof createImageBitmap === "undefined") {
-      throw new Error("Worker hand tracking is not supported in this browser.");
+      throw new TypeError("Worker hand tracking is not supported in this browser.");
     }
 
     this.worker = new Worker(new URL("./handTrackingWorker.ts", import.meta.url), {
@@ -145,7 +145,7 @@ export class MediaPipeWorkerHandTrackerBackend implements HandTrackerBackend {
 
     return await new Promise<void>((resolve, reject) => {
       const requestId = this.nextRequestId();
-      const timeoutId = window.setTimeout(() => {
+      const timeoutId = globalThis.setTimeout(() => {
         if (this.pendingInit?.requestId === requestId) {
           this.pendingInit.reject(new Error("Worker hand tracker initialization timed out."));
           this.pendingInit = null;
@@ -154,11 +154,11 @@ export class MediaPipeWorkerHandTrackerBackend implements HandTrackerBackend {
       this.pendingInit = {
         requestId,
         resolve: () => {
-          window.clearTimeout(timeoutId);
+          globalThis.clearTimeout(timeoutId);
           resolve();
         },
         reject: (error) => {
-          window.clearTimeout(timeoutId);
+          globalThis.clearTimeout(timeoutId);
           reject(error);
         }
       };

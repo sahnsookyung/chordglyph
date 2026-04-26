@@ -142,12 +142,14 @@ export default function App() {
         hand.landmarks,
         width,
         height,
-        strokeColors[role],
-        state.settings.overlayThickness,
-        activeTouchMarkers,
-        idleColors[role],
-        state.settings.hitBoxColor,
-        state.settings.showFingertipStats && !state.settings.lowLatencyMode
+        {
+          stroke: strokeColors[role],
+          thickness: state.settings.overlayThickness,
+          activeTouchMarkers,
+          idleTipColor: idleColors[role],
+          activeColor: state.settings.hitBoxColor,
+          showLabels: state.settings.showFingertipStats && !state.settings.lowLatencyMode
+        }
       );
     });
   }, [

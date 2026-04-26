@@ -1,7 +1,7 @@
 import type { SessionLogEvent } from "./types";
 
 export class SessionLogger {
-  private events: SessionLogEvent[] = [];
+  private readonly events: SessionLogEvent[] = [];
 
   constructor(private readonly maxEvents = 2000) {}
 
