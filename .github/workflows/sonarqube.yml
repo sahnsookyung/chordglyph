@@ -1,10 +1,12 @@
-name: CI
+name: SonarQube Code Quality
 
 on:
   push:
     branches: ['**']
   pull_request:
     branches: ['**']
+  workflow_dispatch:
+  merge_group:
 
 jobs:
   unit-tests:
@@ -41,7 +43,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  sonar-scan:
+  sonarqube:
     name: SonarQube Code Analysis
     needs: unit-tests
     runs-on: ubuntu-latest
@@ -67,34 +69,3 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload scan metadata
-        uses: actions/upload-artifact@v4
-        with:
-          name: sonar-report-task
-          path: .scannerwork/report-task.txt
-          if-no-files-found: error
-          retention-days: 1
-
-  sonar-quality-gate:
-    name: SonarQube Quality Gate
-    needs: sonar-scan
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-
-    steps:
-      - name: Download scan metadata
-        uses: actions/download-artifact@v4
-        with:
-          name: sonar-report-task
-          path: .scannerwork
-
-      - name: SonarQube Quality Gate
-        uses: SonarSource/sonarqube-quality-gate-action@cf038b0e0cdecfa9e56c198bbb7d21d751d62c3b
-        timeout-minutes: 5
-        with:
-          scanMetadataReportFile: .scannerwork/report-task.txt
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: https://sonarcloud.io
