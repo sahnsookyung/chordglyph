@@ -195,7 +195,7 @@ const FINGER_NAME_TO_TIP_INDEX: Record<FingertipName, 4 | 8 | 12 | 16 | 20> = {
 };
 
 function getAudioContextConstructor(): typeof AudioContext | null {
-  if (typeof globalThis.window === "undefined") {
+  if (!("window" in globalThis)) {
     return null;
   }
 
@@ -1324,6 +1324,290 @@ function publishRenderStateIfNeeded(params: {
   setRenderState(nextState);
 }
 
+interface FrameHandSnapshot {
+  trackedHands: TrackedHand[];
+  stableHandednessById: Map<string, Handedness>;
+  stableLeftHand: TrackedHand | null;
+  stableRightHand: TrackedHand | null;
+  primaryHand: TrackedHand | null;
+  noteRawX: number | null;
+  noteY: number | null;
+  smoothedNoteX: number | null;
+  pianoLayout: PianoLayout;
+  stripBounds: ReturnType<typeof getStripBounds>;
+}
+
+function resolveFrameHandSnapshot(params: {
+  frame: TrackerFrame;
+  settings: InstrumentSettings;
+  stableHandSlotsRef: CurrentRef<ReturnType<typeof emptyStableHandSlots>>;
+  smoothedNoteXRef: CurrentRef<number | null>;
+  frameGeometryRef: CurrentRef<{
+    key: string;
+    pianoLayout: PianoLayout;
+    stripBounds: ReturnType<typeof getStripBounds>;
+  } | null>;
+}): FrameHandSnapshot {
+  const { frame, settings, stableHandSlotsRef, smoothedNoteXRef, frameGeometryRef } = params;
+  const confidenceThreshold = getHandConfidenceThreshold(settings.trackingSensitivity);
+  const trackedHands = frame.hands.filter((hand) => hand.confidence >= confidenceThreshold);
+  const stableHandResolution = resolveStableHandedness(trackedHands, stableHandSlotsRef.current);
+  stableHandSlotsRef.current = stableHandResolution.nextSlots;
+  const stableHandednessById = new Map(
+    stableHandResolution.resolvedHands.map((entry) => [entry.hand.id, entry.stableHandedness] as const)
+  );
+  const stableLeftHand =
+    stableHandResolution.resolvedHands.find((entry) => entry.stableHandedness === "Left")?.hand ?? null;
+  const stableRightHand =
+    stableHandResolution.resolvedHands.find((entry) => entry.stableHandedness === "Right")?.hand ?? null;
+  const overlayAlpha = getOverlaySmoothingAlpha(settings.trackingSensitivity);
+  const sortedHands = [...trackedHands].sort((left, right) => averageHandX(right) - averageHandX(left));
+  const primaryHand = sortedHands[0] ?? null;
+  const noteRawX = primaryHand?.landmarks[8]?.x ?? null;
+  const noteY = primaryHand?.landmarks[8]?.y ?? null;
+  const noteX = projectToNoteStripX(
+    noteRawX,
+    settings.noteStripSize,
+    0.035,
+    settings.pianoWidthScale
+  );
+  const smoothedNoteX = noteX === null ? null : ema(smoothedNoteXRef.current, noteX, overlayAlpha);
+  smoothedNoteXRef.current = smoothedNoteX;
+  const geometryKey = [
+    settings.noteStripSize,
+    settings.pianoWidthScale,
+    settings.pianoVerticalOffset,
+    settings.pianoHeightScale,
+    settings.pianoOctaves
+  ].join("|");
+  let frameGeometry = frameGeometryRef.current;
+  if (frameGeometry?.key !== geometryKey) {
+    const noteCount = getNaturalKeyCount(settings.pianoOctaves);
+    frameGeometry = {
+      key: geometryKey,
+      pianoLayout: getPianoLayout(
+        noteCount,
+        settings.pianoVerticalOffset,
+        settings.pianoHeightScale,
+        settings.pianoOctaves
+      ),
+      stripBounds: getStripBounds(settings.noteStripSize, settings.pianoWidthScale)
+    };
+    frameGeometryRef.current = frameGeometry;
+  }
+
+  return {
+    trackedHands,
+    stableHandednessById,
+    stableLeftHand,
+    stableRightHand,
+    primaryHand,
+    noteRawX,
+    noteY,
+    smoothedNoteX,
+    pianoLayout: frameGeometry.pianoLayout,
+    stripBounds: frameGeometry.stripBounds
+  };
+}
+
+function resolveCalibrationUpdate(params: {
+  calibrationSession: PlayingFeelCalibrationSession;
+  stableLeftHand: TrackedHand | null;
+  stableRightHand: TrackedHand | null;
+  settings: InstrumentSettings;
+  pianoLayout: PianoLayout;
+  stripBounds: ReturnType<typeof getStripBounds>;
+  frameTimestamp: number;
+}): CalibrationUpdateResult {
+  const {
+    calibrationSession,
+    stableLeftHand,
+    stableRightHand,
+    settings,
+    pianoLayout,
+    stripBounds,
+    frameTimestamp
+  } = params;
+  const calibrationActive = calibrationSession.active;
+  const targetHand = calibrationActive
+    ? getStableHand(calibrationSession.targetHand, stableLeftHand, stableRightHand)
+    : null;
+  const controlHand = calibrationActive
+    ? getStableHand(calibrationSession.controlHand, stableLeftHand, stableRightHand)
+    : null;
+  const controlPalm = controlHand ? extractHandFeatures(controlHand.landmarks).palmCenter : null;
+  const controlInsideZone =
+    calibrationActive &&
+    isPalmInsideControlZone(
+      controlPalm,
+      calibrationSession.controlHand,
+      pianoLayout,
+      stripBounds
+    );
+  const controlGesture = calibrationActive
+    ? classifyCalibrationControlGesture(controlHand)
+    : "none";
+  const targetAvgX = targetHand ? averageHandX(targetHand) : null;
+  const controlAvgX = controlHand ? averageHandX(controlHand) : null;
+  const roleAmbiguous =
+    calibrationActive &&
+    targetAvgX !== null &&
+    controlAvgX !== null &&
+    (calibrationSession.targetHand === "Left"
+      ? targetAvgX > controlAvgX
+      : targetAvgX < controlAvgX);
+  const calibrationTargetSample = buildCalibrationTargetSample(
+    calibrationSession,
+    targetHand,
+    settings,
+    pianoLayout,
+    frameTimestamp
+  );
+
+  return updatePlayingFeelCalibrationSession(calibrationSession, {
+    timestamp: frameTimestamp,
+    targetSample: calibrationTargetSample,
+    controlGesture,
+    controlHandVisible: controlHand !== null,
+    controlInsideZone,
+    roleAmbiguous
+  });
+}
+
+interface PlayableFrameState {
+  isCircleMode: boolean;
+  pianoTouchState: PianoTouchPipelineResult;
+  pianoPlaybackState: PianoPlaybackState;
+  suppressNormalAudio: boolean;
+  playableMidiNotes: number[];
+  playableSemitones: number[];
+  playableNoteLabels: string[];
+  playableRootLabels: string[];
+  displayedActiveNaturalZones: number[];
+  displayedActiveSharpZones: number[];
+  displayedActiveCircleSegments: Record<Handedness, number[]>;
+  displayedActiveCircleMarkers: ActiveCircleMarker[];
+  displayedActiveTouchMarkers: ActiveTouchMarker[];
+  displayedActiveSemitones: number[];
+  displayedActiveNoteLabels: string[];
+  displayedActiveRootLabels: string[];
+  normalMidiSignature: string;
+  calibrationPreviewMidiSignature: string;
+}
+
+function resolvePlayableFrameState(params: {
+  trackedHands: TrackedHand[];
+  settings: InstrumentSettings;
+  frame: TrackerFrame;
+  pianoLayout: PianoLayout;
+  stableHandednessById: Map<string, Handedness>;
+  tipIntentMemoryRef: CurrentRef<Record<string, TipIntentMemory>>;
+  stableLeftHand: TrackedHand | null;
+  stableRightHand: TrackedHand | null;
+  calibrationUpdate: CalibrationUpdateResult;
+}): PlayableFrameState {
+  const {
+    trackedHands,
+    settings,
+    frame,
+    pianoLayout,
+    stableHandednessById,
+    tipIntentMemoryRef,
+    stableLeftHand,
+    stableRightHand,
+    calibrationUpdate
+  } = params;
+  const isCircleMode = settings.playMode === "circle";
+  const shouldRunPianoTouchPipeline = !isCircleMode || calibrationUpdate.session.active;
+  const pianoTouchState = shouldRunPianoTouchPipeline
+    ? runPianoTouchPipeline(
+        trackedHands,
+        settings,
+        frame,
+        pianoLayout,
+        stableHandednessById,
+        tipIntentMemoryRef.current
+      )
+    : createEmptyPianoTouchPipelineResult();
+  const pianoPlaybackState = derivePianoPlaybackState(
+    shouldRunPianoTouchPipeline,
+    pianoTouchState,
+    settings
+  );
+  const circleModeState = isCircleMode
+    ? runCircleModePipeline(stableLeftHand, stableRightHand, settings)
+    : {
+        activeCircleMarkers: [],
+        activeCircleTouchMarkers: [],
+        circleRootSemitones: [],
+        circleRootMidis: [],
+        circleMidiNotes: [],
+        circleNoteLabels: [],
+        circleRootLabels: [],
+        circleSegmentSets: { Left: new Set<number>(), Right: new Set<number>() }
+      };
+  const suppressNormalAudio = calibrationUpdate.session.active;
+  const playableMidiNotes = isCircleMode
+    ? circleModeState.circleMidiNotes
+    : pianoPlaybackState.activeMidiNotes;
+  const playableSemitones = isCircleMode
+    ? circleModeState.circleRootSemitones
+    : pianoPlaybackState.activeSemitones;
+  const playableNoteLabels = isCircleMode
+    ? circleModeState.circleNoteLabels
+    : pianoPlaybackState.activeNoteLabels;
+  const playableRootLabels = isCircleMode
+    ? circleModeState.circleRootLabels
+    : pianoPlaybackState.activeNoteLabels;
+  const displayedActiveNaturalZones =
+    suppressNormalAudio || isCircleMode ? [] : pianoPlaybackState.activeNaturalZones;
+  const displayedActiveSharpZones =
+    suppressNormalAudio || isCircleMode ? [] : pianoPlaybackState.activeSharpZones;
+  const displayedActiveCircleSegments = getDisplayedActiveCircleSegments(
+    suppressNormalAudio,
+    isCircleMode,
+    circleModeState.circleSegmentSets
+  );
+  const displayedActiveCircleMarkers =
+    suppressNormalAudio || !isCircleMode ? [] : circleModeState.activeCircleMarkers;
+  const displayedActiveTouchMarkers = getDisplayedActiveTouchMarkers(
+    suppressNormalAudio,
+    isCircleMode,
+    circleModeState.activeCircleTouchMarkers,
+    pianoTouchState.activeTouchMarkers
+  );
+  const displayedActiveSemitones = suppressNormalAudio ? [] : playableSemitones;
+  const displayedActiveNoteLabels = suppressNormalAudio ? [] : playableNoteLabels;
+  const displayedActiveRootLabels = suppressNormalAudio ? [] : playableRootLabels;
+  const normalMidiSignature = suppressNormalAudio ? "" : playableMidiNotes.join(",");
+  const calibrationPreviewMidiSignature = getCalibrationPreviewMidiSignature(
+    calibrationUpdate.session,
+    settings.calibrationAudioMode,
+    pianoPlaybackState.activeMidiNotes
+  );
+
+  return {
+    isCircleMode,
+    pianoTouchState,
+    pianoPlaybackState,
+    suppressNormalAudio,
+    playableMidiNotes,
+    playableSemitones,
+    playableNoteLabels,
+    playableRootLabels,
+    displayedActiveNaturalZones,
+    displayedActiveSharpZones,
+    displayedActiveCircleSegments,
+    displayedActiveCircleMarkers,
+    displayedActiveTouchMarkers,
+    displayedActiveSemitones,
+    displayedActiveNoteLabels,
+    displayedActiveRootLabels,
+    normalMidiSignature,
+    calibrationPreviewMidiSignature
+  };
+}
+
 export function useGestureInstrument(): {
   videoRef: RefObject<HTMLVideoElement | null>;
   state: InstrumentViewState;
@@ -1649,98 +1933,33 @@ export function useGestureInstrument(): {
   const commitFrame = useCallback(
     (frame: TrackerFrame) => {
       const liveSettings = settingsRef.current;
-      const confidenceThreshold = getHandConfidenceThreshold(liveSettings.trackingSensitivity);
-      const trackedHands = frame.hands.filter((hand) => hand.confidence >= confidenceThreshold);
-      const stableHandResolution = resolveStableHandedness(trackedHands, stableHandSlotsRef.current);
-      stableHandSlotsRef.current = stableHandResolution.nextSlots;
-      const stableHandednessById = new Map(
-        stableHandResolution.resolvedHands.map((entry) => [entry.hand.id, entry.stableHandedness] as const)
-      );
-      const stableLeftHand =
-        stableHandResolution.resolvedHands.find((entry) => entry.stableHandedness === "Left")?.hand ?? null;
-      const stableRightHand =
-        stableHandResolution.resolvedHands.find((entry) => entry.stableHandedness === "Right")?.hand ?? null;
-      const overlayAlpha = getOverlaySmoothingAlpha(liveSettings.trackingSensitivity);
-      const sortedHands = [...trackedHands].sort((left, right) => averageHandX(right) - averageHandX(left));
-      const primaryHand = sortedHands[0] ?? null;
-      const noteRawX = primaryHand ? primaryHand.landmarks[8]?.x ?? null : null;
-      const noteY = primaryHand ? primaryHand.landmarks[8]?.y ?? null : null;
-      const noteX = projectToNoteStripX(
+      const {
+        trackedHands,
+        stableHandednessById,
+        stableLeftHand,
+        stableRightHand,
+        primaryHand,
         noteRawX,
-        liveSettings.noteStripSize,
-        0.035,
-        liveSettings.pianoWidthScale
-      );
-      const smoothedNoteX =
-        noteX === null ? null : ema(smoothedNoteXRef.current, noteX, overlayAlpha);
-      smoothedNoteXRef.current = smoothedNoteX;
-      const geometryKey = [
-        liveSettings.noteStripSize,
-        liveSettings.pianoWidthScale,
-        liveSettings.pianoVerticalOffset,
-        liveSettings.pianoHeightScale,
-        liveSettings.pianoOctaves
-      ].join("|");
-      let frameGeometry = frameGeometryRef.current;
-      if (frameGeometry?.key !== geometryKey) {
-        const noteCount = getNaturalKeyCount(liveSettings.pianoOctaves);
-        frameGeometry = {
-          key: geometryKey,
-          pianoLayout: getPianoLayout(
-            noteCount,
-            liveSettings.pianoVerticalOffset,
-            liveSettings.pianoHeightScale,
-            liveSettings.pianoOctaves
-          ),
-          stripBounds: getStripBounds(liveSettings.noteStripSize, liveSettings.pianoWidthScale)
-        };
-        frameGeometryRef.current = frameGeometry;
-      }
-      const { pianoLayout, stripBounds } = frameGeometry;
-      const calibrationSession = calibrationSessionRef.current;
-      const calibrationActive = calibrationSession.active;
-      const targetHand = calibrationActive
-        ? getStableHand(calibrationSession.targetHand, stableLeftHand, stableRightHand)
-        : null;
-      const controlHand = calibrationActive
-        ? getStableHand(calibrationSession.controlHand, stableLeftHand, stableRightHand)
-        : null;
-      const controlPalm = controlHand ? extractHandFeatures(controlHand.landmarks).palmCenter : null;
-      const controlInsideZone =
-        calibrationActive &&
-        isPalmInsideControlZone(
-          controlPalm,
-          calibrationSession.controlHand,
-          pianoLayout,
-          stripBounds
-        );
-      const controlGesture = calibrationActive
-        ? classifyCalibrationControlGesture(controlHand)
-        : "none";
-      const targetAvgX = targetHand ? averageHandX(targetHand) : null;
-      const controlAvgX = controlHand ? averageHandX(controlHand) : null;
-      const roleAmbiguous =
-        calibrationActive &&
-        targetAvgX !== null &&
-        controlAvgX !== null &&
-        (calibrationSession.targetHand === "Left"
-          ? targetAvgX > controlAvgX
-          : targetAvgX < controlAvgX);
-      const calibrationTargetSample = buildCalibrationTargetSample(
-        calibrationSession,
-        targetHand,
-        liveSettings,
+        noteY,
+        smoothedNoteX,
         pianoLayout,
-        frame.timestamp
-      );
-
-      const calibrationUpdate = updatePlayingFeelCalibrationSession(calibrationSession, {
-        timestamp: frame.timestamp,
-        targetSample: calibrationTargetSample,
-        controlGesture,
-        controlHandVisible: controlHand !== null,
-        controlInsideZone,
-        roleAmbiguous
+        stripBounds
+      } = resolveFrameHandSnapshot({
+        frame,
+        settings: liveSettings,
+        stableHandSlotsRef,
+        smoothedNoteXRef,
+        frameGeometryRef
+      });
+      const calibrationSession = calibrationSessionRef.current;
+      const calibrationUpdate = resolveCalibrationUpdate({
+        calibrationSession,
+        stableLeftHand,
+        stableRightHand,
+        settings: liveSettings,
+        pianoLayout,
+        stripBounds,
+        frameTimestamp: frame.timestamp
       });
       syncCalibrationUpdateSideEffects({
         calibrationUpdate,
@@ -1765,103 +1984,46 @@ export function useGestureInstrument(): {
         ];
       }
 
-      const isCircleMode = liveSettings.playMode === "circle";
-      const shouldRunPianoTouchPipeline = !isCircleMode || calibrationUpdate.session.active;
-      const pianoTouchState = shouldRunPianoTouchPipeline
-        ? runPianoTouchPipeline(
-            trackedHands,
-            liveSettings,
-            frame,
-            pianoLayout,
-            stableHandednessById,
-            tipIntentMemoryRef.current
-          )
-        : createEmptyPianoTouchPipelineResult();
+      const playableFrameState = resolvePlayableFrameState({
+        trackedHands,
+        settings: liveSettings,
+        frame,
+        pianoLayout,
+        stableHandednessById,
+        tipIntentMemoryRef,
+        stableLeftHand,
+        stableRightHand,
+        calibrationUpdate
+      });
 
       syncPianoTouchCaches({
-        shouldRunPianoTouchPipeline,
-        pianoTouchState,
+        shouldRunPianoTouchPipeline:
+          !playableFrameState.isCircleMode || calibrationUpdate.session.active,
+        pianoTouchState: playableFrameState.pianoTouchState,
         latestFingerDepthSamplesRef,
         latestWeightedFingerDepthSamplesRef,
         latestFingerDepthSampleTimestampsRef,
         tipIntentMemoryRef,
         latestTouchDepthRef
       });
-
-      const pianoPlaybackState = derivePianoPlaybackState(
-        shouldRunPianoTouchPipeline,
-        pianoTouchState,
-        liveSettings
-      );
-      const circleModeState = isCircleMode
-        ? runCircleModePipeline(stableLeftHand, stableRightHand, liveSettings)
-        : {
-            activeCircleMarkers: [],
-            activeCircleTouchMarkers: [],
-            circleRootSemitones: [],
-            circleRootMidis: [],
-            circleMidiNotes: [],
-            circleNoteLabels: [],
-            circleRootLabels: [],
-            circleSegmentSets: { Left: new Set<number>(), Right: new Set<number>() }
-          };
-      const suppressNormalAudio = calibrationUpdate.session.active;
-      const playableMidiNotes = isCircleMode
-        ? circleModeState.circleMidiNotes
-        : pianoPlaybackState.activeMidiNotes;
-      const playableSemitones = isCircleMode
-        ? circleModeState.circleRootSemitones
-        : pianoPlaybackState.activeSemitones;
-      const playableNoteLabels = isCircleMode
-        ? circleModeState.circleNoteLabels
-        : pianoPlaybackState.activeNoteLabels;
-      const playableRootLabels = isCircleMode
-        ? circleModeState.circleRootLabels
-        : pianoPlaybackState.activeNoteLabels;
-      const displayedActiveNaturalZones =
-        suppressNormalAudio || isCircleMode ? [] : pianoPlaybackState.activeNaturalZones;
-      const displayedActiveSharpZones =
-        suppressNormalAudio || isCircleMode ? [] : pianoPlaybackState.activeSharpZones;
-      const displayedActiveCircleSegments = getDisplayedActiveCircleSegments(
-        suppressNormalAudio,
-        isCircleMode,
-        circleModeState.circleSegmentSets
-      );
-      const displayedActiveCircleMarkers =
-        suppressNormalAudio || !isCircleMode ? [] : circleModeState.activeCircleMarkers;
-      const displayedActiveTouchMarkers = getDisplayedActiveTouchMarkers(
-        suppressNormalAudio,
-        isCircleMode,
-        circleModeState.activeCircleTouchMarkers,
-        pianoTouchState.activeTouchMarkers
-      );
-      const displayedActiveSemitones = suppressNormalAudio ? [] : playableSemitones;
-      const displayedActiveNoteLabels = suppressNormalAudio ? [] : playableNoteLabels;
-      const displayedActiveRootLabels = suppressNormalAudio ? [] : playableRootLabels;
-      const normalMidiSignature = suppressNormalAudio ? "" : playableMidiNotes.join(",");
-      const calibrationPreviewMidiSignature = getCalibrationPreviewMidiSignature(
-        calibrationUpdate.session,
-        liveSettings.calibrationAudioMode,
-        pianoPlaybackState.activeMidiNotes
-      );
       syncPlaybackAudio({
         audioRef,
         lastMidiSignatureRef,
         lastCalibrationPreviewMidiSignatureRef,
-        suppressNormalAudio,
-        playableMidiNotes,
-        normalMidiSignature,
-        calibrationPreviewMidiSignature,
-        activeMidiNotes: pianoPlaybackState.activeMidiNotes
+        suppressNormalAudio: playableFrameState.suppressNormalAudio,
+        playableMidiNotes: playableFrameState.playableMidiNotes,
+        normalMidiSignature: playableFrameState.normalMidiSignature,
+        calibrationPreviewMidiSignature: playableFrameState.calibrationPreviewMidiSignature,
+        activeMidiNotes: playableFrameState.pianoPlaybackState.activeMidiNotes
       });
 
       const previous = interactionRef.current;
       const nextInteraction = buildDisplayInteractionState({
         previous,
         trackedHandsCount: trackedHands.length,
-        displayedActiveNaturalZones,
-        displayedActiveSharpZones,
-        displayedActiveSemitones,
+        displayedActiveNaturalZones: playableFrameState.displayedActiveNaturalZones,
+        displayedActiveSharpZones: playableFrameState.displayedActiveSharpZones,
+        displayedActiveSemitones: playableFrameState.displayedActiveSemitones,
         timestamp: frame.timestamp
       });
       interactionRef.current = nextInteraction;
@@ -1871,10 +2033,10 @@ export function useGestureInstrument(): {
         nextInteraction,
         timestamp: frame.timestamp,
         playMode: liveSettings.playMode,
-        displayedActiveSemitones,
-        displayedActiveNoteLabels,
-        suppressNormalAudio,
-        playableMidiNotes,
+        displayedActiveSemitones: playableFrameState.displayedActiveSemitones,
+        displayedActiveNoteLabels: playableFrameState.displayedActiveNoteLabels,
+        suppressNormalAudio: playableFrameState.suppressNormalAudio,
+        playableMidiNotes: playableFrameState.playableMidiNotes,
         trackedHandsCount: trackedHands.length,
         loggerRef,
         lastLoggedSemitoneSignatureRef,
@@ -1884,18 +2046,18 @@ export function useGestureInstrument(): {
       logCountRef.current = logCount;
 
       const currentRootLabel = resolveCurrentRootLabel(
-        displayedActiveSemitones,
-        displayedActiveRootLabels,
+        playableFrameState.displayedActiveSemitones,
+        playableFrameState.displayedActiveRootLabels,
         smoothedNoteX,
-        displayedActiveNaturalZones,
+        playableFrameState.displayedActiveNaturalZones,
         liveSettings.labelStyle,
         liveSettings.pianoOctaves
       );
       const currentChordLabel = resolveCurrentChordLabel(
-        displayedActiveNoteLabels,
-        isCircleMode
+        playableFrameState.displayedActiveNoteLabels,
+        playableFrameState.isCircleMode
       );
-      const focusTouchMarker = findFocusTouchMarker(displayedActiveTouchMarkers);
+      const focusTouchMarker = findFocusTouchMarker(playableFrameState.displayedActiveTouchMarkers);
       const focusHand = resolveFocusHand(focusTouchMarker, trackedHands, primaryHand);
       const focusLandmark = resolveFocusLandmark(focusTouchMarker, focusHand, primaryHand);
       const focusTipLabel = resolveFocusTipLabel(focusTouchMarker, primaryHand);
@@ -1910,17 +2072,17 @@ export function useGestureInstrument(): {
             )
           : null;
       const touchTips = countTouchTips(
-        isCircleMode,
-        displayedActiveCircleMarkers,
-        pianoTouchState.directBlackTouches,
-        pianoTouchState.groupedWhiteTouches
+        playableFrameState.isCircleMode,
+        playableFrameState.displayedActiveCircleMarkers,
+        playableFrameState.pianoTouchState.directBlackTouches,
+        playableFrameState.pianoTouchState.groupedWhiteTouches
       );
       const renderSignature = [
         liveSettings.playMode,
         displayedAudioSignature,
-        displayedActiveNoteLabels.join(","),
-        displayedActiveCircleSegments.Left.join(","),
-        displayedActiveCircleSegments.Right.join(","),
+        playableFrameState.displayedActiveNoteLabels.join(","),
+        playableFrameState.displayedActiveCircleSegments.Left.join(","),
+        playableFrameState.displayedActiveCircleSegments.Right.join(","),
         trackedHands.length,
         calibrationUpdate.session.phase,
         calibrationUpdate.session.targetHand,
@@ -1955,7 +2117,7 @@ export function useGestureInstrument(): {
         audioOutputRoutingSupported: supportsExplicitAudioOutputRouting(),
         currentRootLabel,
         currentChordLabel,
-        currentModeLabel: isCircleMode ? "Circle" : "Piano",
+        currentModeLabel: playableFrameState.isCircleMode ? "Circle" : "Piano",
         logCount,
         warnings: [],
         startupNotice,
@@ -1969,20 +2131,20 @@ export function useGestureInstrument(): {
           focusTipProjectedX,
           touchDepth: latestTouchDepthRef.current,
           depthGate: liveSettings.depthGate,
-          activeNotes: displayedActiveNoteLabels,
+          activeNotes: playableFrameState.displayedActiveNoteLabels,
           touchTips,
-          activeSemitone: displayedActiveSemitones[0] ?? null,
+          activeSemitone: playableFrameState.displayedActiveSemitones[0] ?? null,
           fingerDepthSamples: latestFingerDepthSamplesRef.current,
           fingerDepthSamplesFresh: getFingerSampleFreshness(
             latestFingerDepthSampleTimestampsRef.current,
             frame.timestamp
           )
         },
-        activeNaturalZones: displayedActiveNaturalZones,
-        activeSharpZones: displayedActiveSharpZones,
-        activeTouchMarkers: displayedActiveTouchMarkers,
-        activeCircleSegments: displayedActiveCircleSegments,
-        activeCircleMarkers: displayedActiveCircleMarkers,
+        activeNaturalZones: playableFrameState.displayedActiveNaturalZones,
+        activeSharpZones: playableFrameState.displayedActiveSharpZones,
+        activeTouchMarkers: playableFrameState.displayedActiveTouchMarkers,
+        activeCircleSegments: playableFrameState.displayedActiveCircleSegments,
+        activeCircleMarkers: playableFrameState.displayedActiveCircleMarkers,
         calibrationSession: calibrationUpdate.session
         }
       });

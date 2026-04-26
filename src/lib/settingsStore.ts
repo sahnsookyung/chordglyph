@@ -7,7 +7,7 @@ const STORE_NAME = "settings";
 const SETTINGS_KEY = "instrument";
 
 function openSettingsDatabase(): Promise<IDBDatabase | null> {
-  if (typeof globalThis.window === "undefined" || !("indexedDB" in globalThis.window)) {
+  if (!("window" in globalThis) || !("indexedDB" in globalThis.window)) {
     return Promise.resolve(null);
   }
 
