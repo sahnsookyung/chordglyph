@@ -1,4 +1,4 @@
-name: SonarQube Scan
+name: CI
 
 on:
   push:
@@ -8,6 +8,7 @@ on:
 
 jobs:
   unit-tests:
+    name: Lint and Test Coverage
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -41,6 +42,7 @@ jobs:
           retention-days: 1
 
   sonar-scan:
+    name: SonarQube Code Analysis
     needs: unit-tests
     runs-on: ubuntu-latest
     permissions:
@@ -75,6 +77,7 @@ jobs:
           retention-days: 1
 
   sonar-quality-gate:
+    name: SonarQube Quality Gate
     needs: sonar-scan
     runs-on: ubuntu-latest
     permissions:
