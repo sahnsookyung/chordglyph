@@ -22,6 +22,9 @@ describe("trackerBackend", () => {
   it("throws clear errors for unimplemented backends", async () => {
     await expect(createTrackerBackend("yolo-pose")).rejects.toThrow(/YOLO Pose/);
     await expect(createTrackerBackend("openpose")).rejects.toThrow(/OpenPose/);
+    await expect(createTrackerBackend("bogus-backend" as never)).rejects.toThrow(
+      /Unsupported tracker backend/
+    );
   });
 
   it("lists only video input devices", async () => {

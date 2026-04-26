@@ -4,8 +4,12 @@ import {
 } from "../../src/lib/constants";
 import {
   acceptPlayingFeelCalibration,
+  cancelPlayingFeelCalibration,
+  classifyCalibrationControlGesture,
+  createIdleCalibrationSession,
   getCalibrationAcceptedControlZones,
   getCalibrationControlZone,
+  getOppositeHand,
   isPalmInsideControlZone,
   retryPlayingFeelCalibration,
   skipPlayingFeelCalibrationFinger,
@@ -70,6 +74,17 @@ function captureFingerSummarySession(): PlayingFeelCalibrationSession {
 }
 
 describe("playing feel calibration", () => {
+  it("builds idle sessions and basic hand helpers predictably", () => {
+    const idle = createIdleCalibrationSession(42);
+
+    expect(idle.active).toBe(false);
+    expect(idle.phase).toBe("idle");
+    expect(idle.startedAt).toBe(42);
+    expect(idle.summaries.Left.thumb.status).toBe("Pending");
+    expect(getOppositeHand("Left")).toBe("Right");
+    expect(getOppositeHand("Right")).toBe("Left");
+  });
+
   it("requires control gesture rehearsal before capture begins", () => {
     let session = startPlayingFeelCalibration("Left", 0);
 
@@ -240,6 +255,23 @@ describe("playing feel calibration", () => {
         { left: 0.04, right: 0.96 }
       )
     ).toBe(false);
+  });
+
+  it("returns the full control zone when piano and strip bounds do not block it", () => {
+    expect(
+      getCalibrationAcceptedControlZones(
+        "Left",
+        { topY: 0.95, bottomY: 0.98 },
+        { left: 0.7, right: 0.9 }
+      )
+    ).toEqual([{ left: 0.02, right: 0.36, top: 0.08, bottom: 0.92 }]);
+  });
+
+  it("treats null palms and null control hands as no-op control gestures", () => {
+    expect(
+      isPalmInsideControlZone(null, "Left", { topY: 0.6, bottomY: 0.9 }, { left: 0.04, right: 0.96 })
+    ).toBe(false);
+    expect(classifyCalibrationControlGesture(null)).toBe("none");
   });
 
   it("returns only the actually accepted control-zone regions for the overlay", () => {
@@ -423,5 +455,94 @@ describe("playing feel calibration", () => {
 
     expect(longHold.session.phase).toBe("preview");
     expect(longHold.session.summaries.Left.thumb.status).toBe("Pending");
+  });
+
+  it("pauses when hand roles stay ambiguous and resumes from pause on accept", () => {
+    let session = {
+      ...startPlayingFeelCalibration("Left", 0),
+      phase: "capture-hover" as const
+    };
+
+    session = updatePlayingFeelCalibrationSession(session, {
+      timestamp: 0,
+      targetSample: sample(0, 0.01),
+      controlGesture: "none",
+      controlHandVisible: true,
+      controlInsideZone: true,
+      roleAmbiguous: true
+    }).session;
+
+    const paused = updatePlayingFeelCalibrationSession(session, {
+      timestamp: 700,
+      targetSample: sample(700, 0.01),
+      controlGesture: "none",
+      controlHandVisible: true,
+      controlInsideZone: true,
+      roleAmbiguous: true
+    }).session;
+
+    expect(paused.phase).toBe("paused");
+
+    const resumed = acceptPlayingFeelCalibration(paused, 800);
+    expect(resumed.session.phase).toBe("capture-hover");
+  });
+
+  it("pauses when both target and control hands are away for too long", () => {
+    let session = {
+      ...startPlayingFeelCalibration("Left", 0),
+      phase: "capture-hover" as const
+    };
+
+    session = updatePlayingFeelCalibrationSession(session, {
+      timestamp: 0,
+      targetSample: null,
+      controlGesture: "none",
+      controlHandVisible: false,
+      controlInsideZone: false,
+      roleAmbiguous: false
+    }).session;
+
+    session = updatePlayingFeelCalibrationSession(session, {
+      timestamp: CONTROL_GESTURE_THRESHOLDS.handAwayPauseMs + 50,
+      targetSample: null,
+      controlGesture: "none",
+      controlHandVisible: false,
+      controlInsideZone: false,
+      roleAmbiguous: false
+    }).session;
+
+    expect(session.phase).toBe("paused");
+    expect(session.guidance).toContain("Pause");
+  });
+
+  it("supports explicit pause and cancel flows", () => {
+    const session = {
+      ...startPlayingFeelCalibration("Left", 0),
+      phase: "capture-hover" as const
+    };
+
+    const pauseStarted = updatePlayingFeelCalibrationSession(session, {
+      timestamp: 100,
+      targetSample: sample(100, 0.01),
+      controlGesture: "open",
+      controlHandVisible: true,
+      controlInsideZone: true,
+      roleAmbiguous: false
+    }).session;
+    const paused = updatePlayingFeelCalibrationSession(pauseStarted, {
+      timestamp: 100 + CONTROL_GESTURE_THRESHOLDS.stableMs + 10,
+      targetSample: sample(100 + CONTROL_GESTURE_THRESHOLDS.stableMs + 10, 0.01),
+      controlGesture: "open",
+      controlHandVisible: true,
+      controlInsideZone: true,
+      roleAmbiguous: false
+    });
+
+    expect(paused.session.phase).toBe("paused");
+    expect(paused.cue).toBe("pause");
+
+    const cancelled = cancelPlayingFeelCalibration(paused.session, 200);
+    expect(cancelled.active).toBe(false);
+    expect(cancelled.phase).toBe("idle");
   });
 });
